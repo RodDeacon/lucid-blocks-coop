@@ -3,3 +3,4 @@ work/recovered/
 work/tools/
 dist/*.pck
 dist/*.zip
+mod/overrides/.godot/
