@@ -1,0 +1,5 @@
+work/logs/
+work/recovered/
+work/tools/
+dist/*.pck
+dist/*.zip
