@@ -5,7 +5,7 @@ const CONFIG_PATH: String = "user://lucid_blocks_coop_config.json"
 const DEFAULT_PORT: int = 24567
 const MAX_CLIENTS: int = 4
 const SEND_INTERVAL: float = 0.05
-const WORLD_STATE_INTERVAL: float = 0.12
+const WORLD_STATE_INTERVAL: float = 0.06
 const PERSIST_INTERVAL: float = 1.0
 const PANEL_WIDTH: float = 224.0
 const SNAPSHOT_CHUNK_SIZE: int = 60000
@@ -47,6 +47,7 @@ var last_local_world_authority: bool = true
 var session_load_radius_applied: bool = false
 var session_previous_instance_radius: int = -1
 var local_quit_in_progress: bool = false
+var guest_persistent_ready: bool = false
 
 var hud: CanvasLayer
 var overlay: Control
@@ -117,7 +118,7 @@ func _physics_process(delta: float) -> void:
     if multiplayer.is_server() and world_state_timer >= WORLD_STATE_INTERVAL:
         world_state_timer = 0.0
         server_world_state.rpc(_capture_host_entity_snapshots(), _capture_host_drop_snapshots())
-    elif not multiplayer.is_server() and client_world_sync_ready and persist_timer >= PERSIST_INTERVAL:
+    elif not multiplayer.is_server() and client_world_sync_ready and guest_persistent_ready and persist_timer >= PERSIST_INTERVAL:
         persist_timer = 0.0
         _send_persistent_state_to_host()
 
@@ -187,6 +188,7 @@ func host_session() -> void:
         return
 
     local_quit_in_progress = false
+    guest_persistent_ready = true
     _apply_ui_to_config()
     disconnect_session(false)
 
@@ -207,6 +209,7 @@ func host_session() -> void:
 
 func join_session() -> void:
     local_quit_in_progress = false
+    guest_persistent_ready = false
     _apply_ui_to_config()
     disconnect_session(false)
 
@@ -228,7 +231,7 @@ func join_session() -> void:
 
 
 func disconnect_session(announce: bool = true) -> void:
-    if _has_live_peer() and not multiplayer.is_server():
+    if _has_live_peer() and not multiplayer.is_server() and guest_persistent_ready:
         _send_persistent_state_to_host()
 
     if multiplayer.multiplayer_peer != null:
@@ -243,6 +246,7 @@ func disconnect_session(announce: bool = true) -> void:
     synced_entities.clear()
     synced_dropped_items.clear()
     client_world_sync_ready = false
+    guest_persistent_ready = false
 
     if announce:
         status_message = "Disconnected"
@@ -751,7 +755,22 @@ func _refresh_session_load_radius() -> void:
         if not session_load_radius_applied:
             session_previous_instance_radius = int(Ref.world.instance_radius)
             session_load_radius_applied = true
+
         var target_radius: int = maxi(session_previous_instance_radius, HOST_SESSION_MIN_LOAD_RADIUS)
+        var active_instance_key: String = get_active_dimension_instance_key()
+        var farthest_distance: float = 0.0
+        for peer_id in peer_states.keys():
+            var state: Dictionary = peer_states[peer_id]
+            if not bool(state.get("active", false)):
+                continue
+            if str(state.get("dimension_instance_key", "")) != active_instance_key:
+                continue
+            farthest_distance = maxf(farthest_distance, Ref.player.global_position.distance_to(state.get("position", Ref.player.global_position)))
+
+        if farthest_distance > 0.0:
+            var snapped_radius: int = int(ceil((farthest_distance + 160.0) / 64.0)) * 64
+            target_radius = maxi(target_radius, snapped_radius)
+
         if int(Ref.world.instance_radius) != target_radius:
             Ref.world.instance_radius = target_radius
             Ref.world.force_reload()
@@ -831,8 +850,10 @@ func _capture_local_persistent_state() -> Dictionary:
     return temp_file.data.duplicate_deep()
 
 
-func _send_persistent_state_to_host() -> void:
+func _send_persistent_state_to_host(force_send: bool = false) -> void:
     if multiplayer.is_server() or not _has_live_peer() or not _can_sample_player():
+        return
+    if not force_send and not guest_persistent_ready:
         return
 
     submit_guest_persistent_state.rpc_id(
@@ -868,7 +889,8 @@ func _apply_received_guest_state(save_data: Dictionary) -> void:
     Ref.player.dead = false
     Ref.player.disabled = false
     Ref.player.make_invincible_temporary()
-    _send_persistent_state_to_host()
+    guest_persistent_ready = true
+    _send_persistent_state_to_host(true)
 
 
 func _initialize_new_guest_profile() -> void:
@@ -897,7 +919,8 @@ func _initialize_new_guest_profile() -> void:
     if camera != null:
         camera.rotation.x = camera_angle
     Ref.player.make_invincible_temporary()
-    _send_persistent_state_to_host()
+    guest_persistent_ready = true
+    _send_persistent_state_to_host(true)
 
 
 func _clear_inventory_contents(inventory) -> void:
@@ -1560,6 +1583,7 @@ func _on_peer_disconnected(id: int) -> void:
 
 
 func _on_connected_to_server() -> void:
+    guest_persistent_ready = false
     status_message = "Connected as peer %s, waiting for host world" % multiplayer.get_unique_id()
     print("[lucid-blocks-coop] %s" % status_message)
     _update_status_text()
@@ -1706,6 +1730,7 @@ func _load_host_world_snapshot(register_data: Dictionary, save_data: Dictionary,
 
     await Ref.main.enter_game()
     client_world_sync_ready = false
+    guest_persistent_ready = false
     _install_player_death_hook()
     _prepare_client_world_sync()
     if incoming_snapshot_follow_host_position:
@@ -2101,6 +2126,19 @@ func _find_existing_drop_by_uuid(uuid: String):
     return null
 
 
+func _assign_sync_uuid(node: Node) -> String:
+    var existing_uuid: String = _get_sync_uuid(node)
+    if existing_uuid != "":
+        node.set_meta("coop_uuid", existing_uuid)
+        return existing_uuid
+
+    var new_uuid: String = UUID.v4()
+    node.set_meta("coop_uuid", new_uuid)
+    if Ref.preserve_node_manager != null:
+        Ref.preserve_node_manager.node_to_uuid_map[node] = new_uuid
+    return new_uuid
+
+
 func _remove_unlisted_client_entities(visible_uuids: Dictionary) -> void:
     for child in get_tree().get_root().get_children():
         if child is Player or not (child is Entity):
@@ -2143,15 +2181,24 @@ func _configure_client_synced_drop(dropped_item, uuid: String) -> void:
 
 
 func _apply_client_entity_snapshot(entity, entity_position: Vector3, entity_yaw: float, entity_velocity: Vector3) -> void:
-    entity.global_position = entity_position
+    if not bool(entity.get_meta("coop_snapshot_initialized", false)):
+        entity.global_position = entity_position
+        entity.set_meta("coop_snapshot_initialized", true)
+    else:
+        var distance_error: float = entity.global_position.distance_to(entity_position)
+        if distance_error > 6.0:
+            entity.global_position = entity_position
+        else:
+            entity.global_position = entity.global_position.lerp(entity_position, 0.42)
+
     var rotation_pivot: Node3D = entity.get_node_or_null("%RotationPivot") as Node3D
     if rotation_pivot != null:
-        rotation_pivot.rotation.y = entity_yaw
+        rotation_pivot.rotation.y = lerp_angle(rotation_pivot.rotation.y, entity_yaw, 0.45)
     else:
-        entity.rotation.y = entity_yaw
+        entity.rotation.y = lerp_angle(entity.rotation.y, entity_yaw, 0.45)
     if entity is Entity:
         entity.velocity = entity_velocity
-        entity.movement_velocity = Vector3(entity_velocity.x, 0.0, entity_velocity.z)
+        entity.movement_velocity = entity.movement_velocity.lerp(Vector3(entity_velocity.x, 0.0, entity_velocity.z), 0.55)
 
 
 func _apply_client_drop_snapshot(dropped_item, item_state, drop_position: Vector3, drop_velocity: Vector3) -> void:
@@ -2279,6 +2326,7 @@ func _spawn_network_item(item_state, block_position: Vector3i) -> void:
         return
 
     get_tree().get_root().add_child(dropped_item)
+    _assign_sync_uuid(dropped_item)
     dropped_item.global_position = Vector3(block_position)
     dropped_item.initialize(item_state)
 
@@ -2322,6 +2370,7 @@ func _spawn_break_drops_for_block(block, block_position: Vector3i, pickaxe: bool
         if to_drop.size() > 1 and new_item is DroppedItem:
             new_item.delay_merge()
         get_tree().get_root().add_child(new_item)
+        _assign_sync_uuid(new_item)
         new_item.global_position = Vector3(block_position)
         new_item.initialize(dropped_state)
 
@@ -2448,6 +2497,7 @@ func request_drop_item(item_data: PackedInt32Array, spawn_position: Vector3, lau
         return
 
     get_tree().get_root().add_child(dropped_item)
+    _assign_sync_uuid(dropped_item)
     dropped_item.delay_collect()
     dropped_item.global_position = spawn_position
     dropped_item.initialize(item_state)
