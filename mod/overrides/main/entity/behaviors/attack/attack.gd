@@ -35,9 +35,13 @@ func attack(target: Entity, damage_position: Vector3, knockback_strength: float 
         @warning_ignore("narrowing_conversion")
         actual_damage *= 2.5
 
+    var health_before: int = target.health
     target.knockback_velocity += 0.45 * entity.velocity + horizontal_kb * knockback_strength
     target.knockback_velocity.y += (knockback_strength * target.jump_modifier * fly_strength * (0.5 if not target.is_on_floor() else 1.0))
     target.attacked(entity, actual_damage)
+
+    if target == Ref.player and Ref.coop_manager != null and Ref.coop_manager.is_client_session() and target.health == health_before:
+        Ref.coop_manager.play_local_damage_feedback(actual_damage)
 
     if entity.held_item != null and entity.held_item.item is Tool:
         entity.decrease_held_item_durability(1)
