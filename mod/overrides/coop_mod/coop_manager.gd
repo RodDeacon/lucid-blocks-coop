@@ -7,11 +7,13 @@ const MAX_CLIENTS: int = 4
 const SEND_INTERVAL: float = 0.05
 const PANEL_WIDTH: float = 224.0
 const SNAPSHOT_CHUNK_SIZE: int = 60000
+const DEFAULT_AVATAR_ID: String = "default_blocky"
 
 
 var config: Dictionary = {
     "address": "127.0.0.1",
     "port": DEFAULT_PORT,
+    "avatar_id": DEFAULT_AVATAR_ID,
 }
 
 var peer_states: Dictionary = {}
@@ -95,8 +97,15 @@ func _physics_process(delta: float) -> void:
             local_state.get("dimension", -1),
             local_state.get("position", Vector3.ZERO),
             local_state.get("yaw", 0.0),
+            local_state.get("pitch", 0.0),
             local_state.get("crouching", false),
-            str(local_state.get("name", "guest"))
+            local_state.get("grounded", true),
+            local_state.get("move_speed", 0.0),
+            local_state.get("held_item_id", -1),
+            local_state.get("action_state", 0),
+            str(local_state.get("name", "guest")),
+            str(local_state.get("avatar_id", DEFAULT_AVATAR_ID)),
+            local_state.get("skin_color", Color.WHITE)
         )
 
 
@@ -248,6 +257,14 @@ func execute_command(raw_text: String) -> void:
                 config["port"] = clampi(int(parts[2]), 1, 65535)
             _sync_inputs_from_config()
             join_session()
+        "/avatar":
+            if parts.size() < 2:
+                status_message = "Usage: /avatar <id>"
+            else:
+                config["avatar_id"] = _normalize_avatar_id(parts[1])
+                _save_config()
+                status_message = "Avatar set to %s" % config["avatar_id"]
+            _update_status_text()
         _:
             status_message = "Unknown command: %s" % text
             _update_status_text()
@@ -344,20 +361,39 @@ func _capture_local_state() -> Dictionary:
         "dimension": -1,
         "position": Vector3.ZERO,
         "yaw": 0.0,
+        "pitch": 0.0,
         "crouching": false,
+        "grounded": true,
+        "move_speed": 0.0,
+        "held_item_id": -1,
+        "action_state": 0,
         "name": _get_local_player_name(),
+        "avatar_id": _normalize_avatar_id(str(config.get("avatar_id", DEFAULT_AVATAR_ID))),
+        "skin_color": _get_local_skin_color(),
     }
 
     if not _can_sample_player():
         return state
 
     var rotation_pivot: Node3D = _get_rotation_pivot()
+    var camera: Camera3D = Ref.player.get_node_or_null("%Camera3D") as Camera3D
     state["active"] = true
     state["dimension"] = int(Ref.world.current_dimension)
     state["position"] = Ref.player.global_position
     state["yaw"] = rotation_pivot.rotation.y if rotation_pivot != null else Ref.player.rotation.y
+    state["pitch"] = camera.rotation.x if camera != null else 0.0
     state["crouching"] = Ref.player.is_crouching
+    state["grounded"] = not Ref.player.in_air
+    state["move_speed"] = Vector3(Ref.player.velocity.x, 0.0, Ref.player.velocity.z).length()
+    var held_item_state = Ref.player.held_item_inventory.items[Ref.player.held_item_index]
+    state["held_item_id"] = held_item_state.id if held_item_state != null else -1
+    state["action_state"] = _get_local_action_state()
     return state
+
+
+func _normalize_avatar_id(raw_avatar_id: String) -> String:
+    var normalized: String = raw_avatar_id.strip_edges().to_lower()
+    return normalized if normalized != "" else DEFAULT_AVATAR_ID
 
 
 func _get_local_player_name() -> String:
@@ -365,6 +401,19 @@ func _get_local_player_name() -> String:
     if steam_name.strip_edges() != "":
         return steam_name
     return "Peer %s" % multiplayer.get_unique_id()
+
+
+func _get_local_skin_color() -> Color:
+    if Ref.save_file_manager == null or Ref.save_file_manager.settings_file == null:
+        return Color.WHITE
+    return Ref.save_file_manager.settings_file.get_data("skin_modulate", Color.WHITE)
+
+
+func _get_local_action_state() -> int:
+    var player_hand = Ref.player.get_node_or_null("%PlayerHand")
+    if player_hand == null or player_hand.current_hand == null:
+        return 0
+    return int(player_hand.current_hand.state)
 
 
 func _can_sample_player() -> bool:
@@ -385,8 +434,15 @@ func _serialize_peer_states() -> Array:
             int(state.get("dimension", -1)),
             state.get("position", Vector3.ZERO),
             float(state.get("yaw", 0.0)),
+            float(state.get("pitch", 0.0)),
             bool(state.get("crouching", false)),
+            bool(state.get("grounded", true)),
+            float(state.get("move_speed", 0.0)),
+            int(state.get("held_item_id", -1)),
+            int(state.get("action_state", 0)),
             str(state.get("name", "Peer %s" % int(peer_id))),
+            str(state.get("avatar_id", DEFAULT_AVATAR_ID)),
+            state.get("skin_color", Color.WHITE),
         ])
     return snapshot
 
@@ -401,13 +457,20 @@ func _refresh_markers(states: Dictionary, local_peer_id: int) -> void:
         visible_ids[int_peer_id] = true
         var state: Dictionary = states[peer_id]
         var marker: Node = _ensure_marker(int_peer_id)
+        marker.set_avatar_id(str(state.get("avatar_id", DEFAULT_AVATAR_ID)))
         marker.set_display_name(str(state.get("name", "Peer %s" % int_peer_id)))
+        marker.set_held_item_id(int(state.get("held_item_id", -1)))
+        marker.set_skin_color(state.get("skin_color", Color.WHITE))
         var same_dimension: bool = _can_sample_player() and int(state.get("dimension", -1)) == int(Ref.world.current_dimension)
         marker.apply_state(
             bool(state.get("active", false)) and same_dimension,
             state.get("position", Vector3.ZERO),
             float(state.get("yaw", 0.0)),
-            bool(state.get("crouching", false))
+            float(state.get("pitch", 0.0)),
+            bool(state.get("crouching", false)),
+            bool(state.get("grounded", true)),
+            float(state.get("move_speed", 0.0)),
+            int(state.get("action_state", 0))
         )
 
     for peer_id in markers.keys().duplicate():
@@ -495,7 +558,7 @@ func _build_hud() -> void:
     title_row.add_child(close_button)
 
     var help: Label = Label.new()
-    help.text = "Minecraft-style LAN: host opens the current world. F5 closes. F9 or /tp teleports to a connected player."
+    help.text = "Minecraft-style LAN: host opens the current world. F5 closes. F9 or /tp teleports, /avatar changes your shared avatar id."
     help.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
     help.add_theme_font_size_override("font_size", 9)
     column.add_child(help)
@@ -567,7 +630,7 @@ func _build_hud() -> void:
     button_row.add_child(disconnect_button)
 
     command_input = LineEdit.new()
-    command_input.placeholder_text = "/tp host  or  /tp friendname"
+    command_input.placeholder_text = "/tp host  /avatar default_blocky"
     command_input.custom_minimum_size = Vector2(0, 22)
     command_input.add_theme_font_size_override("font_size", 10)
     command_input.text_submitted.connect(_on_command_submitted)
@@ -699,6 +762,7 @@ func _load_config(announce: bool = false) -> void:
     config = {
         "address": "127.0.0.1",
         "port": DEFAULT_PORT,
+        "avatar_id": DEFAULT_AVATAR_ID,
     }
 
     if not FileAccess.file_exists(CONFIG_PATH):
@@ -716,6 +780,7 @@ func _load_config(announce: bool = false) -> void:
     var data: Variant = JSON.parse_string(file.get_as_text())
     if data is Dictionary:
         config.merge(data, true)
+    config["avatar_id"] = _normalize_avatar_id(str(config.get("avatar_id", DEFAULT_AVATAR_ID)))
 
     _sync_inputs_from_config()
     _refresh_local_ip_label()
@@ -893,7 +958,7 @@ func _apply_client_break_feedback(break_behavior, block_position: Vector3i) -> v
 
 
 @rpc("any_peer", "call_remote", "unreliable")
-func submit_client_state(active: bool, dimension: int, position: Vector3, yaw: float, crouching: bool, player_name: String) -> void:
+func submit_client_state(active: bool, dimension: int, position: Vector3, yaw: float, pitch: float, crouching: bool, grounded: bool, move_speed: float, held_item_id: int, action_state: int, player_name: String, avatar_id: String, skin_color: Color) -> void:
     if not multiplayer.is_server():
         return
 
@@ -906,8 +971,15 @@ func submit_client_state(active: bool, dimension: int, position: Vector3, yaw: f
         "dimension": dimension,
         "position": position,
         "yaw": yaw,
+        "pitch": pitch,
         "crouching": crouching,
+        "grounded": grounded,
+        "move_speed": move_speed,
+        "held_item_id": held_item_id,
+        "action_state": action_state,
         "name": player_name,
+        "avatar_id": _normalize_avatar_id(avatar_id),
+        "skin_color": skin_color,
     }
     _refresh_markers(peer_states, multiplayer.get_unique_id())
 
@@ -1003,7 +1075,7 @@ func server_snapshot(snapshot: Array) -> void:
 
     peer_states.clear()
     for entry in snapshot:
-        if not (entry is Array) or entry.size() < 7:
+        if not (entry is Array) or entry.size() < 14:
             continue
 
         peer_states[int(entry[0])] = {
@@ -1011,8 +1083,15 @@ func server_snapshot(snapshot: Array) -> void:
             "dimension": int(entry[2]),
             "position": entry[3],
             "yaw": float(entry[4]),
-            "crouching": bool(entry[5]),
-            "name": str(entry[6]),
+            "pitch": float(entry[5]),
+            "crouching": bool(entry[6]),
+            "grounded": bool(entry[7]),
+            "move_speed": float(entry[8]),
+            "held_item_id": int(entry[9]),
+            "action_state": int(entry[10]),
+            "name": str(entry[11]),
+            "avatar_id": _normalize_avatar_id(str(entry[12])),
+            "skin_color": entry[13] if entry[13] is Color else Color.WHITE,
         }
 
     _refresh_markers(peer_states, multiplayer.get_unique_id())
