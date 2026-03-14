@@ -131,7 +131,18 @@ func _physics_process(delta: float) -> void:
     client_state_heartbeat_timer += delta
     if multiplayer.is_server() and world_state_timer >= WORLD_STATE_INTERVAL:
         world_state_timer = 0.0
-        server_world_state.rpc(_capture_host_entity_snapshots(), _capture_host_drop_snapshots())
+        for peer_id in peer_states.keys():
+            var int_peer_id: int = int(peer_id)
+            if int_peer_id == 1:
+                continue
+            var peer_state: Dictionary = peer_states[peer_id]
+            if not bool(peer_state.get("active", false)):
+                continue
+            server_world_state.rpc_id(
+                int_peer_id,
+                _capture_host_entity_snapshots(peer_state.get("position", Ref.player.global_position)),
+                _capture_host_drop_snapshots(peer_state.get("position", Ref.player.global_position))
+            )
     elif not multiplayer.is_server() and client_world_sync_ready and guest_persistent_ready and persist_timer >= PERSIST_INTERVAL:
         persist_timer = 0.0
         _send_persistent_state_to_host()
@@ -2042,12 +2053,10 @@ func _clear_client_world_entities_and_drops() -> void:
             child.call_deferred("queue_free")
 
 
-func _capture_host_entity_snapshots() -> Array:
+func _capture_host_entity_snapshots(focus_position: Vector3) -> Array:
     var snapshots: Array = []
     if not _can_share_loaded_world():
         return snapshots
-
-    var session_positions: Array = _get_same_instance_session_positions()
 
     for child in get_tree().get_root().get_children():
         if not (child is Entity) or child is Player:
@@ -2056,7 +2065,7 @@ func _capture_host_entity_snapshots() -> Array:
         var entity := child as Entity
         if not is_instance_valid(entity) or entity.dead:
             continue
-        if not _is_near_any_session_position(entity.global_position, session_positions, ENTITY_SYNC_RADIUS):
+        if entity.global_position.distance_squared_to(focus_position) > ENTITY_SYNC_RADIUS * ENTITY_SYNC_RADIUS:
             continue
 
         var uuid: String = _get_sync_uuid(entity)
@@ -2076,12 +2085,10 @@ func _capture_host_entity_snapshots() -> Array:
     return snapshots
 
 
-func _capture_host_drop_snapshots() -> Array:
+func _capture_host_drop_snapshots(focus_position: Vector3) -> Array:
     var snapshots: Array = []
     if not _can_share_loaded_world():
         return snapshots
-
-    var session_positions: Array = _get_same_instance_session_positions()
 
     for child in get_tree().get_root().get_children():
         if not (child is DroppedItem):
@@ -2090,7 +2097,7 @@ func _capture_host_drop_snapshots() -> Array:
         var dropped_item := child as DroppedItem
         if not is_instance_valid(dropped_item) or dropped_item.item == null:
             continue
-        if not _is_near_any_session_position(dropped_item.global_position, session_positions, DROP_SYNC_RADIUS):
+        if dropped_item.global_position.distance_squared_to(focus_position) > DROP_SYNC_RADIUS * DROP_SYNC_RADIUS:
             continue
 
         var uuid: String = _get_sync_uuid(dropped_item)
