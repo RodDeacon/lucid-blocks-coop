@@ -88,6 +88,7 @@ var imported_anim_name: String = ""
 var placeholder_body: MeshInstance3D
 var placeholder_head_pivot: Node3D
 var placeholder_head: MeshInstance3D
+var placeholder_hand_attachment: Node3D
 var label: Label3D
 
 var target_position: Vector3 = Vector3.ZERO
@@ -715,13 +716,23 @@ func _build_placeholder() -> void:
     placeholder_head.position = Vector3(0.0, 0.2, 0.0)
     placeholder_head_pivot.add_child(placeholder_head)
 
+    placeholder_hand_attachment = Node3D.new()
+    placeholder_hand_attachment.name = "PlaceholderHeldItemAttachment"
+    placeholder_hand_attachment.position = Vector3(0.24, 0.6, -0.03)
+    placeholder_hand_attachment.rotation_degrees = Vector3(18.0, -20.0, -72.0)
+    visual_root.add_child(placeholder_hand_attachment)
+
     _apply_placeholder_palette()
+    _rebuild_held_item_visual()
 
 
 func _update_placeholder_pose(blend: float) -> void:
     if placeholder_head_pivot != null:
         placeholder_head_pivot.position = Vector3(0.0, 0.92 - 0.06 * crouch_amount, 0.0)
         placeholder_head_pivot.rotation.x = lerpf(placeholder_head_pivot.rotation.x, clampf(target_pitch, deg_to_rad(-28.0), deg_to_rad(28.0)) * 0.7, blend)
+    if placeholder_hand_attachment != null:
+        placeholder_hand_attachment.position = Vector3(0.24, 0.6 - 0.07 * crouch_amount, -0.03)
+        placeholder_hand_attachment.rotation_degrees = Vector3(18.0 + 12.0 * hit_pulse, -20.0, -72.0 + 8.0 * sin(walk_phase))
 
 
 func _apply_placeholder_palette() -> void:
@@ -739,7 +750,8 @@ func _rebuild_held_item_visual() -> void:
         held_item_visual.queue_free()
         held_item_visual = null
 
-    if avatar_hand_attachment == null or target_held_item_id < 0:
+    var hand_attachment: Node3D = avatar_hand_attachment if avatar_hand_attachment != null else placeholder_hand_attachment
+    if hand_attachment == null or target_held_item_id < 0:
         return
 
     var item = ItemMap.map(target_held_item_id)
@@ -747,7 +759,7 @@ func _rebuild_held_item_visual() -> void:
         return
 
     held_item_visual = Node3D.new()
-    avatar_hand_attachment.add_child(held_item_visual)
+    hand_attachment.add_child(held_item_visual)
     held_item_visual.position = Vector3(0.07, 0.03, -0.05)
     held_item_visual.rotation_degrees = Vector3(8.0, -32.0, -84.0)
     held_item_visual.scale = Vector3.ONE * 1.35

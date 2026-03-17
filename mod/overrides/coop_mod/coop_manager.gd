@@ -1675,7 +1675,13 @@ func sync_local_pickup_item(dropped_item) -> bool:
 
     var item_uuid: String = _get_sync_uuid(dropped_item)
     if item_uuid == "":
-        return bool(dropped_item.get_meta("coop_predicted_drop", false))
+        if bool(dropped_item.get_meta("coop_predicted_drop", false)):
+            if is_instance_valid(dropped_item) and not bool(dropped_item.get_meta("coop_pickup_pending_request", false)):
+                dropped_item.set_meta("coop_pickup_pending_request", true)
+                if dropped_item.has_method("collect"):
+                    dropped_item.collect()
+            return true
+        return false
 
     var item_state = dropped_item.item.duplicate() if dropped_item.item != null else null
 
@@ -1845,7 +1851,7 @@ func _spawn_client_predicted_drop(item_state, spawn_position: Vector3, launch_ve
     dropped_item.global_position = spawn_position
     dropped_item.initialize(item_state)
     if use_launch_velocity:
-        dropped_item.global_position = spawn_position
+        dropped_item.global_position = spawn_position + Vector3(0.5, 0.5, 0.5)
         dropped_item.velocity = launch_velocity
     _mark_client_predicted_drop(dropped_item, item_state)
     return dropped_item
@@ -7028,6 +7034,21 @@ func broadcast_host_visual_bolt(start_position: Vector3, direction: Vector3) -> 
     sync_host_visual_bolt.rpc(start_position, normalized_direction)
 
 
+func send_guest_visual_ball_throw(start_position: Vector3, linear_velocity: Vector3) -> void:
+    if multiplayer.is_server() or not _has_live_peer() or _is_local_world_authority() or _is_client_gameplay_locked():
+        return
+    request_guest_visual_ball_throw.rpc_id(1, start_position, linear_velocity)
+
+
+func send_guest_visual_bolt(start_position: Vector3, direction: Vector3) -> void:
+    if multiplayer.is_server() or not _has_live_peer() or _is_local_world_authority() or _is_client_gameplay_locked():
+        return
+    var normalized_direction: Vector3 = direction.normalized()
+    if normalized_direction.is_zero_approx():
+        return
+    request_guest_visual_bolt.rpc_id(1, start_position, normalized_direction)
+
+
 @rpc("authority", "call_remote", "unreliable")
 func sync_host_visual_ball_throw(start_position: Vector3, linear_velocity: Vector3) -> void:
     if multiplayer.is_server() or receiving_host_world or _is_local_world_authority():
@@ -7042,6 +7063,39 @@ func sync_host_visual_bolt(start_position: Vector3, direction: Vector3) -> void:
         return
     _mark_host_contact()
     _spawn_client_visual_bolt(start_position, direction)
+
+
+@rpc("any_peer", "call_remote", "unreliable")
+func request_guest_visual_ball_throw(start_position: Vector3, linear_velocity: Vector3) -> void:
+    if not multiplayer.is_server():
+        return
+    var sender_id: int = multiplayer.get_remote_sender_id()
+    if sender_id <= 0:
+        return
+    _spawn_client_visual_ball_throw(start_position, linear_velocity)
+    for peer_id in multiplayer.get_peers():
+        var int_peer_id: int = int(peer_id)
+        if int_peer_id == sender_id:
+            continue
+        sync_host_visual_ball_throw.rpc_id(int_peer_id, start_position, linear_velocity)
+
+
+@rpc("any_peer", "call_remote", "unreliable")
+func request_guest_visual_bolt(start_position: Vector3, direction: Vector3) -> void:
+    if not multiplayer.is_server():
+        return
+    var sender_id: int = multiplayer.get_remote_sender_id()
+    if sender_id <= 0:
+        return
+    var normalized_direction: Vector3 = direction.normalized()
+    if normalized_direction.is_zero_approx():
+        return
+    _spawn_client_visual_bolt(start_position, normalized_direction)
+    for peer_id in multiplayer.get_peers():
+        var int_peer_id: int = int(peer_id)
+        if int_peer_id == sender_id:
+            continue
+        sync_host_visual_bolt.rpc_id(int_peer_id, start_position, normalized_direction)
 
 
 func _apply_client_break_feedback(break_behavior, block_position: Vector3i) -> void:
@@ -7146,7 +7200,7 @@ func request_drop_item(item_data: PackedInt32Array, spawn_position: Vector3, lau
     dropped_item.delay_merge()
     dropped_item.global_position = spawn_position
     dropped_item.initialize(item_state)
-    dropped_item.global_position = spawn_position
+    dropped_item.global_position = spawn_position + Vector3(0.5, 0.5, 0.5)
     dropped_item.velocity = launch_velocity
     sync_spawn_drop.rpc(drop_uuid, item_data, dropped_item.global_position, dropped_item.velocity, bool(dropped_item.can_collect))
 

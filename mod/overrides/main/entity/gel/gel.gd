@@ -64,6 +64,8 @@ func _on_target_entered(body: Node3D) -> void :
         return
     if body is Gel:
         return
+    if bothersome_entities.has(body):
+        return
     bothersome_entities.append(body)
     update_bothersome_target()
 
@@ -150,7 +152,10 @@ func update_bothersome_target() -> void :
         return
 
     for entity in bothersome_entities:
-        if not is_session_player_entity(bothersome):
+        if is_session_player_entity(entity):
+            bothersome = entity
+            break
+        if not is_instance_valid(bothersome):
             bothersome = entity
 
     if bothersome == null:

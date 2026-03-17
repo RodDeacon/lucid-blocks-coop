@@ -19,7 +19,7 @@ func interact(sustain: bool = false, data: Dictionary = {}) -> bool:
     new_ball.global_position = holder.hand.global_position
 
     new_ball.linear_velocity = holder.velocity + holder.get_look_direction() * throw_impulse
-    _broadcast_host_visual_ball_throw(new_ball)
+    _sync_visual_ball_throw(new_ball)
 
     holder.decrease_held_item_durability(1)
 
@@ -37,17 +37,19 @@ func interact(sustain: bool = false, data: Dictionary = {}) -> bool:
     return true
 
 
-func _broadcast_host_visual_ball_throw(new_ball: Ball) -> void:
+func _sync_visual_ball_throw(new_ball: Ball) -> void:
     if Ref.coop_manager == null:
         return
-    if not multiplayer.is_server() or not Ref.coop_manager.has_active_session():
+    if not Ref.coop_manager.has_active_session():
         return
-    if Ref.coop_manager.is_remote_player_proxy(holder):
+    if multiplayer.is_server():
+        if Ref.coop_manager.is_remote_player_proxy(holder):
+            return
+        if Ref.coop_manager.has_method("broadcast_host_visual_ball_throw"):
+            Ref.coop_manager.call("broadcast_host_visual_ball_throw", new_ball.global_position, new_ball.linear_velocity)
         return
-    if not Ref.coop_manager.has_method("broadcast_host_visual_ball_throw"):
-        return
-
-    Ref.coop_manager.call("broadcast_host_visual_ball_throw", new_ball.global_position, new_ball.linear_velocity)
+    if holder == Ref.player and Ref.coop_manager.has_method("send_guest_visual_ball_throw"):
+        Ref.coop_manager.call("send_guest_visual_ball_throw", new_ball.global_position, new_ball.linear_velocity)
 
 
 func can_interact(_data: Dictionary) -> bool:

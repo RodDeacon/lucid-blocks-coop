@@ -18,7 +18,7 @@ func interact(sustain: bool = false, data: Dictionary = {}) -> bool:
     new_bolt.entity_owner = holder
 
     new_bolt.fire(holder.get_look_direction(), true)
-    _broadcast_host_visual_bolt(new_bolt)
+    _sync_visual_bolt(new_bolt)
     holder.decrease_held_item_durability(1)
 
     var new_player: AudioStreamPlayer3D = %ShootPlayer.duplicate()
@@ -32,17 +32,19 @@ func interact(sustain: bool = false, data: Dictionary = {}) -> bool:
     return true
 
 
-func _broadcast_host_visual_bolt(new_bolt: Bolt) -> void:
+func _sync_visual_bolt(new_bolt: Bolt) -> void:
     if Ref.coop_manager == null:
         return
-    if not multiplayer.is_server() or not Ref.coop_manager.has_active_session():
+    if not Ref.coop_manager.has_active_session():
         return
-    if Ref.coop_manager.is_remote_player_proxy(holder):
+    if multiplayer.is_server():
+        if Ref.coop_manager.is_remote_player_proxy(holder):
+            return
+        if Ref.coop_manager.has_method("broadcast_host_visual_bolt"):
+            Ref.coop_manager.call("broadcast_host_visual_bolt", new_bolt.global_position, holder.get_look_direction())
         return
-    if not Ref.coop_manager.has_method("broadcast_host_visual_bolt"):
-        return
-
-    Ref.coop_manager.call("broadcast_host_visual_bolt", new_bolt.global_position, holder.get_look_direction())
+    if holder == Ref.player and Ref.coop_manager.has_method("send_guest_visual_bolt"):
+        Ref.coop_manager.call("send_guest_visual_bolt", new_bolt.global_position, holder.get_look_direction())
 
 
 func can_interact(_data: Dictionary) -> bool:

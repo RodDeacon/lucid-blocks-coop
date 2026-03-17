@@ -1,4 +1,4 @@
-extends "res://main/entity/entity.gd"
+extends "res://main/entity/player/player.gd"
 class_name RemotePlayerProxy
 
 
@@ -22,7 +22,7 @@ var _has_pending_state: bool = false
 func _ready() -> void:
 	visible = false
 	collision_layer = 2
-	collision_mask = 0
+	collision_mask = 1
 	disabled = false
 	dead = false
 	invincible = true
@@ -36,12 +36,14 @@ func _ready() -> void:
 	under_water = false
 	head_under_water = false
 	feet_under_water = false
+	is_crouching = false
 	direct_damage_cooldown = false
 	velocity = Vector3.ZERO
 	movement_velocity = Vector3.ZERO
 	gravity_velocity = Vector3.ZERO
 	knockback_velocity = Vector3.ZERO
 	rope_velocity = Vector3.ZERO
+	push_bodies = {}
 
 	if not is_instance_valid(head):
 		head = get_node_or_null("RotationPivot/Head") as Marker3D
@@ -140,6 +142,7 @@ func _physics_process(delta: float) -> void:
 
 func _apply_crouching(value: bool) -> void:
 	crouching = value
+	is_crouching = value
 	if is_instance_valid(head):
 		head.position.y = CROUCH_HEAD_HEIGHT if value else STAND_HEAD_HEIGHT
 
