@@ -22,7 +22,7 @@ var _has_pending_state: bool = false
 func _ready() -> void:
 	visible = false
 	collision_layer = 2
-	collision_mask = 1
+	collision_mask = 0
 	disabled = false
 	dead = false
 	invincible = true
@@ -79,6 +79,7 @@ func _ready() -> void:
 		direct_damage_timer.stop()
 
 	_target_position = global_position
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	set_process(false)
 	set_physics_process(true)
 	set_process_input(false)

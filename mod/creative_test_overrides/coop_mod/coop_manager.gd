@@ -34,6 +34,8 @@ const BREAK_OUTLINE_SCENE_PATH: String = "res://main/entity/behaviors/break_bloc
 const DROPPED_ITEM_SCENE_PATH: String = "res://main/items/dropped_item/dropped_item.tscn"
 const VISUAL_BALL_SCENE_PATH: String = "res://main/items/held_item/held_ball_thrower/ball.tscn"
 const VISUAL_BOLT_SCENE_PATH: String = "res://main/entity/baal/bolt/mini_bolt.tscn"
+const VISUAL_HEART_SCENE_PATH: String = "res://main/items/held_item/held_heart_thrower/heart/heart.tscn"
+const VISUAL_BLAST_SCENE_PATH: String = "res://main/items/held_item/held_blaster/blast/blast.tscn"
 const VISUAL_PROJECTILE_LIFETIME: float = 5.0
 const CLIENT_DROP_CORRECTION_DISTANCE: float = 1.35
 const CLIENT_DROP_POSITION_BLEND: float = 0.45
@@ -1813,6 +1815,31 @@ func _item_data_signature(item_data: PackedInt32Array) -> String:
 
 func _item_state_signature(item_state) -> String:
     return _item_data_signature(_serialize_item_state(item_state))
+
+
+func _drop_matches_pending_pickup_receipt(dropped_item) -> bool:
+    if dropped_item == null or not is_instance_valid(dropped_item) or not (dropped_item is DroppedItem) or dropped_item.item == null:
+        return false
+
+    var signature: String = _item_state_signature(dropped_item.item)
+    if signature == "":
+        return false
+
+    for receipt in pending_pickup_receipts:
+        if str(receipt.get("signature", "")) == signature:
+            return true
+    return false
+
+
+func _animate_client_drop_collect_removal(dropped_item) -> void:
+    if dropped_item == null or not is_instance_valid(dropped_item):
+        return
+
+    dropped_item.set_meta("coop_merge_cleanup_pending", true)
+    if dropped_item is DroppedItem and dropped_item.state != DroppedItem.COLLECTED and dropped_item.has_method("collect"):
+        dropped_item.collect()
+        return
+    dropped_item.queue_free()
 
 
 func _mark_client_predicted_drop(dropped_item, item_state) -> void:
@@ -5816,7 +5843,11 @@ func _remove_unlisted_client_drops(visible_uuids: Dictionary) -> void:
             continue
         var uuid: String = _get_sync_uuid(child)
         if uuid == "" or not visible_uuids.has(uuid):
-            if not bool(child.get_meta("coop_merge_cleanup_pending", false)):
+            if bool(child.get_meta("coop_merge_cleanup_pending", false)):
+                continue
+            if bool(child.get_meta("coop_pickup_pending_request", false)) or _drop_matches_pending_pickup_receipt(child) or _is_client_drop_within_pickup_radius(child):
+                _animate_client_drop_collect_removal.call_deferred(child)
+            else:
                 _animate_client_drop_merge_removal.call_deferred(child)
 
 
@@ -6333,6 +6364,10 @@ func _maybe_broadcast_host_entity_projectile_visual(entity, special_state: Dicti
     var start_position: Vector3 = _resolve_host_visual_projectile_start(entity)
     if held_item_script_path.contains("/held_ball_thrower/"):
         broadcast_host_visual_ball_throw(start_position, _resolve_host_visual_ball_linear_velocity(entity, held_item))
+    elif held_item_script_path.contains("/held_heart_thrower/"):
+        broadcast_host_visual_heart_throw(start_position, _resolve_host_visual_ball_linear_velocity(entity, held_item))
+    elif held_item_script_path.contains("/held_blaster/"):
+        broadcast_host_visual_blast(start_position, _get_entity_total_velocity(entity), _resolve_host_visual_projectile_direction(entity))
     elif held_item_script_path.contains("/held_rod_thrower/"):
         broadcast_host_visual_bolt(start_position, _resolve_host_visual_projectile_direction(entity))
 
@@ -6368,25 +6403,34 @@ func _apply_compact_animation_state(root: Node, state: Dictionary) -> void:
 func _apply_entity_held_item_state(entity, held_item_id: int, held_item_index: int) -> void:
     if entity == null or not is_instance_valid(entity) or not (entity is Entity):
         return
-    if held_item_index < 0 or held_item_id < 0:
-        return
     if not _object_has_property(entity, "held_item_inventory"):
         return
 
     var inventory = entity.get("held_item_inventory")
-    if inventory == null or not _object_has_property(inventory, "items") or held_item_index >= inventory.items.size():
+    if inventory == null or not _object_has_property(inventory, "items") or inventory.items.is_empty():
+        return
+    var resolved_index: int = held_item_index
+    if resolved_index < 0 or resolved_index >= inventory.items.size():
+        resolved_index = clampi(int(entity.held_item_index), 0, inventory.items.size() - 1)
+    if held_item_id < 0:
+        if inventory.items[resolved_index] != null:
+            inventory.set_item(resolved_index, null)
+        if entity.has_method("hold_item"):
+            entity.call("hold_item", resolved_index)
+        else:
+            entity.held_item_index = resolved_index
         return
 
-    var existing_state = inventory.items[held_item_index]
+    var existing_state = inventory.items[resolved_index]
     if existing_state == null or int(existing_state.id) != held_item_id:
         var item = ItemMap.map(held_item_id)
         if item != null:
             var new_item_state := ItemState.new()
             new_item_state.initialize(item)
-            inventory.set_item(held_item_index, new_item_state)
+            inventory.set_item(resolved_index, new_item_state)
 
-    if int(entity.held_item_index) != held_item_index:
-        entity.held_item_index = held_item_index
+    if int(entity.held_item_index) != resolved_index:
+        entity.held_item_index = resolved_index
 
 
 func _find_first_animation_tree(root: Node) -> AnimationTree:
@@ -6997,6 +7041,42 @@ func _spawn_client_visual_ball_throw(start_position: Vector3, linear_velocity: V
         projectile.velocity = linear_velocity
 
 
+func _spawn_client_visual_heart_throw(start_position: Vector3, linear_velocity: Vector3) -> void:
+    var projectile = _spawn_client_visual_projectile(VISUAL_HEART_SCENE_PATH)
+    if projectile == null:
+        return
+
+    if projectile is Node3D:
+        projectile.global_position = start_position
+    elif "global_position" in projectile:
+        projectile.global_position = start_position
+
+    if "linear_velocity" in projectile:
+        projectile.linear_velocity = linear_velocity
+    elif "velocity" in projectile:
+        projectile.velocity = linear_velocity
+
+
+func _spawn_client_visual_blast(start_position: Vector3, holder_velocity: Vector3, direction: Vector3) -> void:
+    var normalized_direction: Vector3 = direction.normalized()
+    if normalized_direction.is_zero_approx():
+        return
+
+    var projectile = _spawn_client_visual_projectile(VISUAL_BLAST_SCENE_PATH)
+    if projectile == null:
+        return
+
+    if projectile is Node3D:
+        projectile.global_position = start_position
+    elif "global_position" in projectile:
+        projectile.global_position = start_position
+
+    if projectile.has_method("shoot"):
+        projectile.shoot(holder_velocity, normalized_direction)
+    elif "velocity" in projectile:
+        projectile.velocity = holder_velocity + normalized_direction * _resolve_object_float_property(projectile, ["speed"], 12.0)
+
+
 func _spawn_client_visual_bolt(start_position: Vector3, direction: Vector3) -> void:
     var normalized_direction: Vector3 = direction.normalized()
     if normalized_direction.is_zero_approx():
@@ -7025,6 +7105,21 @@ func broadcast_host_visual_ball_throw(start_position: Vector3, linear_velocity: 
     sync_host_visual_ball_throw.rpc(start_position, linear_velocity)
 
 
+func broadcast_host_visual_heart_throw(start_position: Vector3, linear_velocity: Vector3) -> void:
+    if not multiplayer.is_server() or not _has_live_peer():
+        return
+    sync_host_visual_heart_throw.rpc(start_position, linear_velocity)
+
+
+func broadcast_host_visual_blast(start_position: Vector3, holder_velocity: Vector3, direction: Vector3) -> void:
+    if not multiplayer.is_server() or not _has_live_peer():
+        return
+    var normalized_direction: Vector3 = direction.normalized()
+    if normalized_direction.is_zero_approx():
+        return
+    sync_host_visual_blast.rpc(start_position, holder_velocity, normalized_direction)
+
+
 func broadcast_host_visual_bolt(start_position: Vector3, direction: Vector3) -> void:
     if not multiplayer.is_server() or not _has_live_peer():
         return
@@ -7038,6 +7133,21 @@ func send_guest_visual_ball_throw(start_position: Vector3, linear_velocity: Vect
     if multiplayer.is_server() or not _has_live_peer() or _is_local_world_authority() or _is_client_gameplay_locked():
         return
     request_guest_visual_ball_throw.rpc_id(1, start_position, linear_velocity)
+
+
+func send_guest_visual_heart_throw(start_position: Vector3, linear_velocity: Vector3) -> void:
+    if multiplayer.is_server() or not _has_live_peer() or _is_local_world_authority() or _is_client_gameplay_locked():
+        return
+    request_guest_visual_heart_throw.rpc_id(1, start_position, linear_velocity)
+
+
+func send_guest_visual_blast(start_position: Vector3, holder_velocity: Vector3, direction: Vector3) -> void:
+    if multiplayer.is_server() or not _has_live_peer() or _is_local_world_authority() or _is_client_gameplay_locked():
+        return
+    var normalized_direction: Vector3 = direction.normalized()
+    if normalized_direction.is_zero_approx():
+        return
+    request_guest_visual_blast.rpc_id(1, start_position, holder_velocity, normalized_direction)
 
 
 func send_guest_visual_bolt(start_position: Vector3, direction: Vector3) -> void:
@@ -7055,6 +7165,22 @@ func sync_host_visual_ball_throw(start_position: Vector3, linear_velocity: Vecto
         return
     _mark_host_contact()
     _spawn_client_visual_ball_throw(start_position, linear_velocity)
+
+
+@rpc("authority", "call_remote", "unreliable")
+func sync_host_visual_heart_throw(start_position: Vector3, linear_velocity: Vector3) -> void:
+    if multiplayer.is_server() or receiving_host_world or _is_local_world_authority():
+        return
+    _mark_host_contact()
+    _spawn_client_visual_heart_throw(start_position, linear_velocity)
+
+
+@rpc("authority", "call_remote", "unreliable")
+func sync_host_visual_blast(start_position: Vector3, holder_velocity: Vector3, direction: Vector3) -> void:
+    if multiplayer.is_server() or receiving_host_world or _is_local_world_authority():
+        return
+    _mark_host_contact()
+    _spawn_client_visual_blast(start_position, holder_velocity, direction)
 
 
 @rpc("authority", "call_remote", "unreliable")
@@ -7078,6 +7204,39 @@ func request_guest_visual_ball_throw(start_position: Vector3, linear_velocity: V
         if int_peer_id == sender_id:
             continue
         sync_host_visual_ball_throw.rpc_id(int_peer_id, start_position, linear_velocity)
+
+
+@rpc("any_peer", "call_remote", "unreliable")
+func request_guest_visual_heart_throw(start_position: Vector3, linear_velocity: Vector3) -> void:
+    if not multiplayer.is_server():
+        return
+    var sender_id: int = multiplayer.get_remote_sender_id()
+    if sender_id <= 0:
+        return
+    _spawn_client_visual_heart_throw(start_position, linear_velocity)
+    for peer_id in multiplayer.get_peers():
+        var int_peer_id: int = int(peer_id)
+        if int_peer_id == sender_id:
+            continue
+        sync_host_visual_heart_throw.rpc_id(int_peer_id, start_position, linear_velocity)
+
+
+@rpc("any_peer", "call_remote", "unreliable")
+func request_guest_visual_blast(start_position: Vector3, holder_velocity: Vector3, direction: Vector3) -> void:
+    if not multiplayer.is_server():
+        return
+    var sender_id: int = multiplayer.get_remote_sender_id()
+    if sender_id <= 0:
+        return
+    var normalized_direction: Vector3 = direction.normalized()
+    if normalized_direction.is_zero_approx():
+        return
+    _spawn_client_visual_blast(start_position, holder_velocity, normalized_direction)
+    for peer_id in multiplayer.get_peers():
+        var int_peer_id: int = int(peer_id)
+        if int_peer_id == sender_id:
+            continue
+        sync_host_visual_blast.rpc_id(int_peer_id, start_position, holder_velocity, normalized_direction)
 
 
 @rpc("any_peer", "call_remote", "unreliable")

@@ -760,9 +760,9 @@ func _rebuild_held_item_visual() -> void:
 
     held_item_visual = Node3D.new()
     hand_attachment.add_child(held_item_visual)
-    held_item_visual.position = Vector3(0.07, 0.03, -0.05)
-    held_item_visual.rotation_degrees = Vector3(8.0, -32.0, -84.0)
-    held_item_visual.scale = Vector3.ONE * 1.35
+    held_item_visual.position = Vector3(0.02, 0.01, -0.01)
+    held_item_visual.rotation_degrees = Vector3(12.0, -18.0, -78.0)
+    held_item_visual.scale = Vector3.ONE * 1.55
 
     if item is Block and not item.foliage and not item.override_icon and item.texture != null:
         var block_mesh := MeshInstance3D.new()
