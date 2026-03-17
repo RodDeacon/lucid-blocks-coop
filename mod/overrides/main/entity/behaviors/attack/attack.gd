@@ -12,9 +12,14 @@ func attack(target, damage_position: Vector3, knockback_strength: float = 22.0, 
     if not is_instance_valid(target) or entity.disabled or not enabled or target.dead or not is_inside_tree() or not target.is_inside_tree():
         return false
 
+    var actual_damage: int = int(damage * damage_modifier)
     var is_remote_player_target: bool = Ref.coop_manager != null and Ref.coop_manager.is_remote_player_proxy(target) and target != Ref.player
     if is_remote_player_target and not multiplayer.is_server():
-        return true
+        if Ref.coop_manager != null and Ref.coop_manager.sync_local_attack_on_remote_player(entity, target, damage_position, actual_damage, knockback_strength, fly_strength, fire_aspect):
+            if entity.held_item != null and entity.held_item.item is Tool:
+                entity.decrease_held_item_durability(1)
+            return true
+        return false
 
     if target.direct_damage_cooldown:
         return false
@@ -22,8 +27,6 @@ func attack(target, damage_position: Vector3, knockback_strength: float = 22.0, 
     var horizontal_kb: Vector3 = target.global_position - entity.global_position
     horizontal_kb.y = 0
     horizontal_kb = horizontal_kb.normalized()
-
-    var actual_damage: int = int(damage * damage_modifier)
 
     if not is_remote_player_target and target.axe_weakness and is_instance_valid(entity.held_item) and entity.held_item is HeldTool and entity.held_item.item.axe_boost:
         @warning_ignore("narrowing_conversion")

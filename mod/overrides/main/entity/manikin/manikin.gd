@@ -23,6 +23,7 @@ class_name Manikin extends Entity
 @export var spacer_radius: float = 4.0
 @export var spacer_radius_run: float = 4.0
 @export var direction_punish: float = 0.4
+@export var spacer_attack_max_distance_padding: float = 0.75
 
 @onready var anim: AnimationTree = %ManikinModel.get_node("%AnimationTree")
 
@@ -249,6 +250,17 @@ func _force_session_runtime_active() -> void:
     var animation_player := %ManikinModel.get_node_or_null("AnimationPlayer") as AnimationPlayer
     if animation_player != null:
         animation_player.process_mode = Node.PROCESS_MODE_ALWAYS
+
+
+func _get_detection_radius() -> float:
+    var detection_shape := %DetectionArea3D.get_node_or_null("CollisionShape3D") as CollisionShape3D
+    if detection_shape != null and detection_shape.shape is SphereShape3D:
+        return float((detection_shape.shape as SphereShape3D).radius)
+    return 8.0
+
+
+func _get_max_spacer_attack_distance() -> float:
+    return maxf(shoot_distance, _get_detection_radius() + spacer_attack_max_distance_padding)
 
 
 func _promote_session_attacker(attacker) -> void:
@@ -553,16 +565,19 @@ func attack() -> void:
     if not %AttackTimer.is_stopped() or state != CHASE or dead or disabled or not is_inside_tree():
         return
 
+    var target_distance: float = _get_target_position().distance_to(global_position)
     _debug_log("attack spacer=%s facing=%s dist=%.2f player=%s attack_target=%s forced=%s held=%s" % [
         str(is_spacer()),
         str(is_facing_player()),
-        _get_target_position().distance_to(global_position),
+        target_distance,
         _debug_target_label(player),
         _debug_target_label(attack_target),
         _debug_target_label(forced_session_target),
         held_item.get_class() if is_instance_valid(held_item) else "<none>",
     ])
-    if is_spacer() and _get_target_position().distance_to(global_position) > shoot_distance:
+    if is_spacer() and target_distance > _get_max_spacer_attack_distance():
+        return
+    if is_spacer() and target_distance > shoot_distance:
         if is_facing_player():
             shoot_ball()
     elif attack_target != null and not attack_target.dead:

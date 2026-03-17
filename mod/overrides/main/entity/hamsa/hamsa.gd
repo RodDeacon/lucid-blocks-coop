@@ -146,7 +146,10 @@ func teleport(final: bool) -> bool:
 func travel() -> void :
     queue_free()
     Ref.sun.set_time_scale(1.0)
-    Ref.main.teleport_to_dimension(LucidBlocksWorld.Dimension.FIRMAMENT)
+    if Ref.coop_manager != null:
+        Ref.coop_manager.travel_group_to_dimension(int(LucidBlocksWorld.Dimension.FIRMAMENT))
+    else:
+        Ref.main.teleport_to_dimension(LucidBlocksWorld.Dimension.FIRMAMENT)
 
 
 func preserve_save(file: SaveFile, uuid: String) -> void :

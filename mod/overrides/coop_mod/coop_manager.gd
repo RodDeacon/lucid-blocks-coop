@@ -123,6 +123,7 @@ var reconnect_reason: String = ""
 var host_rehost_pending: bool = false
 var host_rehost_port: int = DEFAULT_PORT
 var suppress_local_game_quit_session_shutdown: bool = false
+var group_dimension_transfer_in_progress: bool = false
 var pending_remote_block_changes: Dictionary = {}
 var pending_remote_water_changes: Dictionary = {}
 var pending_remote_fire_changes: Dictionary = {}
@@ -192,6 +193,7 @@ func _ready() -> void:
         Ref.main.game_quit.connect(_on_local_game_quit)
     if is_instance_valid(Ref.main) and not Ref.main.world_loaded.is_connected(_on_local_world_loaded):
         Ref.main.world_loaded.connect(_on_local_world_loaded)
+    call_deferred("_install_game_menu_quit_hook")
 
     multiplayer.peer_connected.connect(_on_peer_connected)
     multiplayer.peer_disconnected.connect(_on_peer_disconnected)
@@ -205,6 +207,85 @@ func _ready() -> void:
 
     print("[lucid-blocks-coop] manager ready")
     _update_status_text()
+
+
+func _install_game_menu_quit_hook() -> void:
+    if not is_instance_valid(Ref.main):
+        return
+    var game_menu = Ref.main.get_node_or_null("%GameMenu")
+    if game_menu == null or not game_menu.has_signal("quit_requested"):
+        return
+
+    var original_callable := Callable(Ref.main, "_on_game_menu_quit_requested")
+    var coop_callable := Callable(self, "_on_game_menu_quit_requested_coop")
+    if game_menu.quit_requested.is_connected(original_callable):
+        game_menu.quit_requested.disconnect(original_callable)
+    if not game_menu.quit_requested.is_connected(coop_callable):
+        game_menu.quit_requested.connect(coop_callable)
+
+
+func _on_game_menu_quit_requested_coop() -> void:
+    if not _has_live_peer():
+        if is_instance_valid(Ref.main) and Ref.main.has_method("_on_game_menu_quit_requested"):
+            await Ref.main._on_game_menu_quit_requested()
+        return
+
+    if multiplayer.is_server():
+        await _host_save_and_quit_to_main_menu()
+        return
+
+    await _guest_save_and_quit_to_main_menu("Left host session")
+
+
+func _host_save_and_quit_to_main_menu() -> void:
+    if not is_instance_valid(Ref.main):
+        return
+    if local_quit_in_progress:
+        return
+
+    local_quit_in_progress = true
+    if is_local_player_fake_dead():
+        _abort_host_respawn(false, false)
+    clear_fake_death_override_after_shutdown = true
+
+    if _has_live_peer() and multiplayer.is_server():
+        await _shutdown_host_session(false, "Host saved and quit")
+
+    local_quit_in_progress = false
+    await Ref.main._on_game_menu_quit_requested()
+
+
+func _flush_guest_persistent_state_before_disconnect() -> void:
+    if multiplayer.is_server() or not _has_live_peer() or not guest_persistent_ready:
+        return
+
+    print("[lucid-blocks-coop][quit-debug] sending guest persistent state before disconnect")
+    _send_persistent_state_to_host(true)
+    multiplayer.poll()
+    await get_tree().process_frame
+    multiplayer.poll()
+    await get_tree().create_timer(0.15, true).timeout
+
+
+func _guest_save_and_quit_to_main_menu(reason: String = "Left host session") -> void:
+    if multiplayer.is_server() or not is_instance_valid(Ref.main):
+        return
+    if client_menu_kick_pending:
+        return
+
+    local_quit_in_progress = true
+    print("[lucid-blocks-coop][quit-debug] guest save+quit intercepted")
+    await _flush_guest_persistent_state_before_disconnect()
+
+    if _has_live_peer():
+        disconnect_session(false)
+    else:
+        disconnect_session(false)
+
+    status_message = reason
+    _update_status_text()
+    client_menu_kick_pending = true
+    await _kick_client_to_main_menu()
 
 
 func _input(event: InputEvent) -> void:
@@ -627,13 +708,7 @@ func leave_session() -> void:
         _shutdown_host_session.call_deferred(false, "Host ended the session")
         return
 
-    if guest_persistent_ready:
-        _send_persistent_state_to_host(true)
-        guest_persistent_ready = false
-    disconnect_session(false)
-    status_message = "Left host session"
-    _update_status_text()
-    _queue_client_main_menu_kick()
+    await _guest_save_and_quit_to_main_menu("Left host session")
 
 
 func _has_live_peer() -> bool:
@@ -1100,13 +1175,61 @@ func open_dimension_instance(target_dimension: int, target_pocket_owner_key: Str
     _open_dimension_instance_async.call_deferred(target_dimension, target_pocket_owner_key)
 
 
+func travel_group_to_dimension(target_dimension: int, immediate: bool = false, white_close: bool = false, target_pocket_owner_key: String = "") -> void:
+    _travel_group_to_dimension_async.call_deferred(target_dimension, immediate, white_close, target_pocket_owner_key)
+
+
+func _resolve_target_pocket_owner_key(target_dimension: int, target_pocket_owner_key: String = "") -> String:
+    var pocket_owner_key: String = target_pocket_owner_key.strip_edges()
+    if target_dimension == int(LucidBlocksWorld.Dimension.POCKET) and pocket_owner_key == "":
+        pocket_owner_key = _get_local_player_key()
+    return pocket_owner_key
+
+
+func _travel_group_to_dimension_async(target_dimension: int, immediate: bool = false, white_close: bool = false, target_pocket_owner_key: String = "") -> void:
+    if not _can_sample_player() or group_dimension_transfer_in_progress:
+        return
+
+    var pocket_owner_key: String = _resolve_target_pocket_owner_key(target_dimension, target_pocket_owner_key)
+    if not _has_live_peer():
+        _set_loaded_dimension_instance(target_dimension, pocket_owner_key)
+        await Ref.main.teleport_to_dimension(target_dimension, immediate, white_close)
+        return
+
+    if not multiplayer.is_server():
+        _send_persistent_state_to_host()
+        request_group_dimension_travel.rpc_id(1, target_dimension, pocket_owner_key, immediate, white_close)
+        status_message = "Waiting for host teleport"
+        _update_status_text()
+        return
+
+    group_dimension_transfer_in_progress = true
+    status_message = "Opening dimension %s" % target_dimension
+    _update_status_text()
+    _set_loaded_dimension_instance(target_dimension, pocket_owner_key)
+    suppress_local_game_quit_session_shutdown = true
+    await Ref.main.teleport_to_dimension(target_dimension, immediate, white_close)
+    suppress_local_game_quit_session_shutdown = false
+
+    if not multiplayer.is_server() or not _has_live_peer() or not _can_share_loaded_world():
+        group_dimension_transfer_in_progress = false
+        return
+
+    await get_tree().process_frame
+    _broadcast_local_state_now()
+    for peer_id in multiplayer.get_peers():
+        _send_world_snapshot_to_peer.call_deferred(int(peer_id), target_dimension, pocket_owner_key, true)
+
+    group_dimension_transfer_in_progress = false
+    status_message = "Dimension synced"
+    _update_status_text()
+
+
 func _open_dimension_instance_async(target_dimension: int, target_pocket_owner_key: String = "") -> void:
     if not _can_sample_player():
         return
 
-    var pocket_owner_key: String = target_pocket_owner_key.strip_edges()
-    if target_dimension == int(LucidBlocksWorld.Dimension.POCKET) and pocket_owner_key == "":
-        pocket_owner_key = _get_local_player_key()
+    var pocket_owner_key: String = _resolve_target_pocket_owner_key(target_dimension, target_pocket_owner_key)
 
     if _has_live_peer() and not multiplayer.is_server():
         _send_persistent_state_to_host()
@@ -1180,7 +1303,7 @@ func teleport_to_connected_player() -> void:
 
 
 func execute_command(raw_text: String) -> void:
-    var text: String = raw_text.strip_edges()
+    var text: String = raw_text.lstrip(" \t\r\n")
     if text == "":
         return
 
@@ -1196,6 +1319,8 @@ func execute_command(raw_text: String) -> void:
             _execute_weather_command(parts)
         "/kill":
             _execute_kill_command(parts)
+        "/list":
+            _execute_list_command()
         "/tp":
             _execute_tp_command(parts)
         "/gamemode", "/gm":
@@ -1238,6 +1363,17 @@ func execute_command(raw_text: String) -> void:
 
 
 
+
+func _execute_list_command() -> void:
+    var count = 1
+    var msg = _get_local_player_name() + " (You)"
+    for peer_id in peer_states.keys():
+        if int(peer_id) == multiplayer.get_unique_id():
+            continue
+        count += 1
+        msg += ", " + str(peer_states[peer_id].get("name", "Peer " + str(peer_id)))
+    status_message = "%d players connected\n%s" % [count, msg]
+    _update_status_text()
 func send_chat_message(text: String) -> void:
     if not multiplayer.has_multiplayer_peer() or multiplayer.get_peers().is_empty():
         # Play singleplayer, just show locally
@@ -1261,17 +1397,19 @@ func _request_send_chat_message(text: String) -> void:
 func _receive_chat_message(sender_id: int, text: String) -> void:
     if Ref.command_chat_manager != null and Ref.command_chat_manager.has_method("receive_chat_message"):
         var sender_name: String = str(sender_id)
-        if sender_id == 1:
-            sender_name = "Host"
-            if multiplayer.get_unique_id() == 1:
-                sender_name = "You"
-        elif sender_id == multiplayer.get_unique_id():
+        if sender_id == multiplayer.get_unique_id():
             sender_name = "You"
+        elif peer_states.has(sender_id):
+            sender_name = str(peer_states[sender_id].get("name", "Peer " + str(sender_id)))
+        elif peer_states.has(str(sender_id)):
+            sender_name = str(peer_states[str(sender_id)].get("name", "Peer " + str(sender_id)))
+        elif sender_id == 1:
+            sender_name = "Host"
         Ref.command_chat_manager.receive_chat_message(sender_name, text)
 
 
 func get_command_autocomplete_entries(raw_text: String) -> Array:
-    var text: String = raw_text.strip_edges()
+    var text: String = raw_text.lstrip(" \t\r\n")
     var entries: Array = []
     if not text.begins_with("/"):
         return entries
@@ -1284,7 +1422,7 @@ func get_command_autocomplete_entries(raw_text: String) -> Array:
     var command_body: String = body.get_slice(" ", 0).to_lower()
     var argument_body: String = ""
     if has_space:
-        argument_body = body.substr(command_body.length() + 1).strip_edges()
+        argument_body = body.substr(command_body.length() + 1).lstrip(" \t\r\n")
 
     if not has_space:
         if command_body == "tp":
@@ -1294,6 +1432,10 @@ func get_command_autocomplete_entries(raw_text: String) -> Array:
         return _get_root_command_autocomplete_entries(command_body)
 
     match command_body:
+        "time":
+            return _get_time_command_autocomplete_entries(argument_body)
+        "weather":
+            return _get_weather_command_autocomplete_entries(argument_body)
         "tp":
             return _get_tp_command_autocomplete_entries(argument_body)
         "gamemode", "gm":
@@ -1311,6 +1453,31 @@ func get_command_autocomplete_entries(raw_text: String) -> Array:
     return entries
 
 
+
+func _get_time_command_autocomplete_entries(query: String) -> Array:
+    var options = ["set", "add", "query"]
+    if query.to_lower().begins_with("set "):
+        options = ["day", "noon", "night", "midnight"]
+        var sub_query = query.substr(4).to_lower()
+        var entries = []
+        for opt in options:
+            if opt.begins_with(sub_query):
+                entries.append(_make_command_autocomplete_entry("/time set " + opt, opt, "Time target"))
+        return entries
+        
+    var entries = []
+    for opt in options:
+        if opt.begins_with(query.to_lower()):
+            entries.append(_make_command_autocomplete_entry("/time " + opt, opt, "Time action"))
+    return entries
+
+func _get_weather_command_autocomplete_entries(query: String) -> Array:
+    var options = ["clear", "rain", "thunder"]
+    var entries = []
+    for opt in options:
+        if opt.begins_with(query.to_lower()):
+            entries.append(_make_command_autocomplete_entry("/weather " + opt, opt, "Weather type"))
+    return entries
 func _get_root_command_autocomplete_entries(query: String) -> Array:
     var commands: Array = [
         {"command": "/host", "hint": "Host a LAN session"},
@@ -1321,6 +1488,16 @@ func _get_root_command_autocomplete_entries(query: String) -> Array:
         {"command": "/spawnmenu", "hint": "Open the mob spawn browser"},
         {"command": "/spawnlist", "hint": "List spawnable mob ids"},
         {"command": "/avatar", "hint": "Set your avatar id"},
+        {"command": "/list", "hint": "List connected players"},
+        {"command": "/time", "hint": "Change world time"},
+        {"command": "/weather", "hint": "Change world weather"},
+        {"command": "/kill", "hint": "Kill yourself"},
+        {"command": "/help", "hint": "List all commands"},
+        {"command": "/list", "hint": "List connected players"},
+        {"command": "/time", "hint": "Change world time"},
+        {"command": "/weather", "hint": "Change world weather"},
+        {"command": "/kill", "hint": "Kill yourself"},
+        {"command": "/help", "hint": "List all commands"},
     ]
     var lowered_query: String = query.to_lower()
     var entries: Array = []
@@ -1788,6 +1965,19 @@ func sync_host_attack_on_remote_player(attacker: Entity, target, damage_position
     return true
 
 
+func _begin_target_direct_damage_cooldown(target, duration: float = CLIENT_ENTITY_HIT_COOLDOWN_SEC) -> void:
+    if target == null or not is_instance_valid(target):
+        return
+    if target.has_method("begin_direct_damage_cooldown"):
+        target.begin_direct_damage_cooldown(duration)
+        return
+    if _object_has_property(target, "direct_damage_cooldown"):
+        target.set("direct_damage_cooldown", true)
+    var direct_damage_timer := target.get_node_or_null("DirectDamageTimer") as Timer
+    if direct_damage_timer != null:
+        direct_damage_timer.start(duration)
+
+
 func sync_host_direct_hit_on_remote_player(attacker: Entity, target, damage_position: Vector3, damage: int, knockback_delta: Vector3, fire_aspect: bool = false) -> bool:
     if not multiplayer.is_server() or not _has_live_peer() or not is_remote_player_proxy(target):
         return false
@@ -1798,10 +1988,7 @@ func sync_host_direct_hit_on_remote_player(attacker: Entity, target, damage_posi
     if peer_id <= 1:
         return false
 
-    if target.has_method("begin_direct_damage_cooldown"):
-        target.begin_direct_damage_cooldown()
-    elif _object_has_property(target, "direct_damage_cooldown"):
-        target.set("direct_damage_cooldown", true)
+    _begin_target_direct_damage_cooldown(target)
 
     receive_remote_player_direct_hit.rpc_id(
         peer_id,
@@ -1812,6 +1999,21 @@ func sync_host_direct_hit_on_remote_player(attacker: Entity, target, damage_posi
         damage,
         fire_aspect
     )
+    return true
+
+
+func sync_local_attack_on_remote_player(attacker: Entity, target, damage_position: Vector3, damage: int, knockback_strength: float, fly_strength: float, fire_aspect: bool) -> bool:
+    if not _has_live_peer() or multiplayer.is_server() or attacker == null or not is_instance_valid(attacker) or target == null or not is_instance_valid(target):
+        return false
+    if _is_local_world_authority() or _is_client_gameplay_locked() or not is_remote_player_proxy(target):
+        return false
+
+    var target_peer_id: int = get_remote_player_proxy_peer_id(target)
+    if target_peer_id <= 0:
+        return false
+
+    _begin_target_direct_damage_cooldown(target)
+    request_player_attack.rpc_id(1, target_peer_id, damage_position, maxi(1, damage), knockback_strength, fly_strength, fire_aspect)
     return true
 
 
@@ -5279,7 +5481,7 @@ func _shutdown_host_session(reconnectable: bool, reason: String = "") -> void:
         return
 
     host_session_ending.rpc(reconnectable, reason)
-    await get_tree().create_timer(0.25, true).timeout
+    await get_tree().create_timer(0.5, true).timeout
     disconnect_session(false)
     if clear_fake_death_override_after_shutdown:
         local_fake_death_save_override.clear()
@@ -5330,13 +5532,7 @@ func host_session_ending(reconnectable: bool = false, reason: String = "") -> vo
         _begin_reconnect_flow(reason if reason != "" else "Host is rehosting")
         return
 
-    local_quit_in_progress = true
-    if guest_persistent_ready:
-        _send_persistent_state_to_host(true)
-    disconnect_session(false)
-    status_message = reason if reason != "" else "Host ended the session"
-    _update_status_text()
-    _queue_client_main_menu_kick()
+    await _guest_save_and_quit_to_main_menu(reason if reason != "" else "Host ended the session")
 
 
 func _queue_client_main_menu_kick() -> void:
@@ -5445,6 +5641,7 @@ func _kick_client_to_main_menu() -> void:
         client_menu_kick_pending = false
         return
 
+    print("[lucid-blocks-coop][quit-debug] kicking guest to main menu")
     _close_pause_menu_if_open()
     await Ref.trans.open()
     Ref.audio_manager.play_song(Ref.main.main_menu_music, 100)
@@ -5456,11 +5653,18 @@ func _kick_client_to_main_menu() -> void:
     if game_menu != null:
         game_menu.close()
 
+    if is_instance_valid(Ref.player):
+        Ref.player.consume_actions()
     await Ref.main.quit_game(false, false)
     await Ref.trans.close()
 
     if main_menu != null:
         main_menu.activate()
+        var play_button: Control = main_menu.get_node_or_null("%PlayButton") as Control
+        if play_button != null:
+            play_button.grab_focus()
+    if is_instance_valid(Ref.player):
+        Ref.player.consume_actions()
     local_quit_in_progress = false
     client_restore_in_progress = false
     client_menu_kick_pending = false
@@ -8033,6 +8237,24 @@ func request_dimension_world_snapshot(target_dimension: int, target_pocket_owner
     _send_world_snapshot_to_peer.call_deferred(sender_id, target_dimension, target_pocket_owner_key, false)
 
 
+@rpc("any_peer", "call_remote", "reliable")
+func request_group_dimension_travel(target_dimension: int, target_pocket_owner_key: String = "", immediate: bool = false, white_close: bool = false) -> void:
+    if not multiplayer.is_server() or group_dimension_transfer_in_progress:
+        return
+
+    var sender_id: int = multiplayer.get_remote_sender_id()
+    if sender_id <= 0:
+        return
+
+    var sender_state: Dictionary = peer_states.get(sender_id, {})
+    if sender_state.is_empty() or not bool(sender_state.get("active", false)):
+        return
+    if not _is_peer_state_same_instance(sender_state, get_active_dimension_instance_key()):
+        return
+
+    _travel_group_to_dimension_async.call_deferred(target_dimension, immediate, white_close, target_pocket_owner_key)
+
+
 @rpc("authority", "call_remote", "reliable")
 func begin_host_world_snapshot(register_json: String, chunk_count: int, host_position: Vector3, follow_host_position: bool = true) -> void:
     if multiplayer.is_server():
@@ -8276,6 +8498,53 @@ func request_entity_attack(target_uuid: String, damage_position: Vector3, damage
         bool(target_entity.disabled),
         float(Time.get_ticks_msec()) / 1000.0
     )
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func request_player_attack(target_peer_id: int, damage_position: Vector3, damage: int, knockback_strength: float, fly_strength: float, fire_aspect: bool) -> void:
+    if not multiplayer.is_server():
+        return
+
+    var sender_id: int = multiplayer.get_remote_sender_id()
+    if sender_id <= 0 or target_peer_id <= 0 or sender_id == target_peer_id:
+        return
+
+    var sender_state: Dictionary = peer_states.get(sender_id, {})
+    if sender_state.is_empty() or not _is_peer_state_same_instance(sender_state, get_active_dimension_instance_key()):
+        return
+
+    var attacker = get_remote_player_proxy(sender_id)
+    if attacker == null or not is_instance_valid(attacker) or attacker.dead or attacker.disabled:
+        return
+
+    var target = Ref.player if target_peer_id == 1 else get_remote_player_proxy(target_peer_id)
+    if target == null or not is_instance_valid(target):
+        return
+    if target_peer_id != 1 and not is_remote_player_proxy(target):
+        return
+    if bool(target.get("dead")) or bool(target.get("disabled")) or bool(target.get("direct_damage_cooldown")):
+        return
+
+    var attacker_position: Vector3 = sender_state.get("position", attacker.global_position)
+    if attacker_position.distance_squared_to(target.global_position) > (ENTITY_ATTACK_REQUEST_MAX_DISTANCE + 1.25) * (ENTITY_ATTACK_REQUEST_MAX_DISTANCE + 1.25):
+        return
+
+    var actual_damage: int = maxi(1, damage)
+    var attacker_velocity: Vector3 = get_attack_impulse_velocity(attacker, float(sender_state.get("move_speed", -1.0)))
+    var knockback_velocity: Vector3 = calculate_attack_knockback_velocity(target, attacker_position, attacker_velocity, knockback_strength, fly_strength)
+
+    if target_peer_id == 1:
+        _begin_target_direct_damage_cooldown(Ref.player)
+        Ref.player.knockback_velocity += knockback_velocity
+        Ref.player.attacked(attacker, actual_damage)
+        if Ref.player.has_node("%Bleed"):
+            var target_to_attacker: Vector3 = (attacker_position - Ref.player.global_position).normalized()
+            Ref.player.get_node("%Bleed").bleed(damage_position, target_to_attacker, actual_damage)
+        if fire_aspect and Ref.player.has_node("%Burn"):
+            Ref.player.get_node("%Burn").ignite()
+        return
+
+    sync_host_attack_on_remote_player(attacker, target, damage_position, actual_damage, knockback_strength, fly_strength, fire_aspect)
 
 
 @rpc("authority", "call_remote", "reliable")

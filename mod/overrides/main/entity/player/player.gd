@@ -411,7 +411,10 @@ func die() -> void :
         Ref.plot_manager.remove_cutscene()
         revive()
 
-        await Ref.main.teleport_to_dimension(LucidBlocksWorld.Dimension.NARAKA, true)
+        if Ref.coop_manager != null:
+            await Ref.coop_manager._travel_group_to_dimension_async(int(LucidBlocksWorld.Dimension.NARAKA), true, false)
+        else:
+            await Ref.main.teleport_to_dimension(LucidBlocksWorld.Dimension.NARAKA, true)
     else:
         druj += 1
         dead = true

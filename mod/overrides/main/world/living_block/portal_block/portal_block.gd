@@ -43,7 +43,10 @@ func interact(interactor: Entity) -> void:
         return
     super.interact(interactor)
 
-    Ref.main.teleport_to_dimension(target_dimension)
+    if Ref.coop_manager != null:
+        Ref.coop_manager.travel_group_to_dimension(int(target_dimension))
+    else:
+        Ref.main.teleport_to_dimension(target_dimension)
 
 
 func can_currently_interact(interactor: Entity) -> bool:

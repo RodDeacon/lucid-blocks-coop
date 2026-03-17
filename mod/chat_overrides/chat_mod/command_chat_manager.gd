@@ -2,12 +2,12 @@ extends Node
 
 const MAX_HISTORY_MESSAGES: int = 100
 const MAX_COMMAND_HISTORY: int = 50
-const MAX_VISIBLE_OPEN_MESSAGES: int = 16
+const MAX_VISIBLE_OPEN_MESSAGES: int = 8
 const MAX_VISIBLE_CLOSED_MESSAGES: int = 4
-const MAX_VISIBLE_SUGGESTIONS: int = 10
+const MAX_VISIBLE_SUGGESTIONS: int = 6
 const CLOSED_MESSAGE_LIFETIME_SEC: float = 12.0
 const MAX_HISTORY_MESSAGE_CHARS: int = 256
-const CHAT_WIDTH: float = 340.0
+const CHAT_WIDTH: float = 240.0
 const COMMAND_COLOR: String = "d7e3ff"
 const SYSTEM_COLOR: String = "f3efe2"
 const ERROR_COLOR: String = "ff9b91"
@@ -37,7 +37,7 @@ var command_history: PackedStringArray = PackedStringArray()
 var command_history_index: int = -1
 var draft_input: String = ""
 var last_status_message: String = ""
-var active_suggestions: Array[Dictionary] = []
+var active_suggestions: Array = []
 var selected_suggestion_index: int = -1
 
 var COMMAND_REGISTRY: Dictionary = {
@@ -128,10 +128,10 @@ func _build_ui() -> void:
     history_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     var history_bg := StyleBoxFlat.new()
     history_bg.bg_color = Color(0, 0, 0, 1)
-    history_bg.corner_radius_top_left = 6
-    history_bg.corner_radius_top_right = 6
-    history_bg.corner_radius_bottom_left = 6
-    history_bg.corner_radius_bottom_right = 6
+    history_bg.corner_radius_top_left = 2
+    history_bg.corner_radius_top_right = 2
+    history_bg.corner_radius_bottom_left = 2
+    history_bg.corner_radius_bottom_right = 2
     history_panel.add_theme_stylebox_override("panel", history_bg)
     history_panel.self_modulate = Color(1.0, 1.0, 1.0, 0.0)
     chat_stack.add_child(history_panel)
@@ -158,71 +158,26 @@ func _build_ui() -> void:
     history_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
     history_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     history_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
-    history_label.add_theme_font_size_override("normal_font_size", 11)
+    history_label.add_theme_font_size_override("normal_font_size", 7)
     history_label.add_theme_color_override("default_color", Color(1, 1, 1))
-    history_label.add_theme_color_override("font_shadow_color", Color(0.15, 0.15, 0.15, 1.0))
+    history_label.add_theme_color_override("font_shadow_color", Color(0.2, 0.2, 0.2, 1.0))
     history_label.add_theme_constant_override("shadow_offset_x", 1)
     history_label.add_theme_constant_override("shadow_offset_y", 1)
     history_label.add_theme_constant_override("shadow_outline_size", 1)
     history_scroll.add_child(history_label)
 
-    suggestion_panel = PanelContainer.new()
-    suggestion_panel.visible = false
-    suggestion_panel.mouse_filter = Control.MOUSE_FILTER_STOP
-    var sugg_bg := StyleBoxFlat.new()
-    sugg_bg.bg_color = Color(0, 0, 0, 1)
-    sugg_bg.corner_radius_top_left = 6
-    sugg_bg.corner_radius_top_right = 6
-    sugg_bg.corner_radius_bottom_left = 6
-    sugg_bg.corner_radius_bottom_right = 6
-    suggestion_panel.add_theme_stylebox_override("panel", sugg_bg)
-    suggestion_panel.self_modulate = Color(1.0, 1.0, 1.0, 0.72)
-    suggestion_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    chat_stack.add_child(suggestion_panel)
-
-    var suggestion_margin := MarginContainer.new()
-    suggestion_margin.add_theme_constant_override("margin_left", 6)
-    suggestion_margin.add_theme_constant_override("margin_right", 6)
-    suggestion_margin.add_theme_constant_override("margin_top", 5)
-    suggestion_margin.add_theme_constant_override("margin_bottom", 5)
-    suggestion_panel.add_child(suggestion_margin)
-
-    var suggestion_column := VBoxContainer.new()
-    suggestion_column.add_theme_constant_override("separation", 2)
-    suggestion_margin.add_child(suggestion_column)
-
-    suggestion_title_label = Label.new()
-    suggestion_title_label.visible = false
-    suggestion_title_label.add_theme_font_size_override("font_size", 11)
-    suggestion_title_label.add_theme_color_override("font_color", Color(0.90, 0.93, 1.0))
-    suggestion_column.add_child(suggestion_title_label)
-
-    suggestion_scroll = ScrollContainer.new()
-    suggestion_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-    suggestion_scroll.follow_focus = true
-    suggestion_column.add_child(suggestion_scroll)
-
-    suggestion_list = VBoxContainer.new()
-    suggestion_list.add_theme_constant_override("separation", 1)
-    suggestion_scroll.add_child(suggestion_list)
-
-    suggestion_hint_label = Label.new()
-    suggestion_hint_label.visible = false
-    suggestion_hint_label.add_theme_font_size_override("font_size", 10)
-    suggestion_hint_label.add_theme_color_override("font_color", Color(0.70, 0.76, 0.84))
-    suggestion_column.add_child(suggestion_hint_label)
 
     input_panel = PanelContainer.new()
     input_panel.visible = false
     input_panel.mouse_filter = Control.MOUSE_FILTER_STOP
     var input_bg := StyleBoxFlat.new()
     input_bg.bg_color = Color(0, 0, 0, 1)
-    input_bg.corner_radius_top_left = 6
-    input_bg.corner_radius_top_right = 6
-    input_bg.corner_radius_bottom_left = 6
-    input_bg.corner_radius_bottom_right = 6
+    input_bg.corner_radius_top_left = 2
+    input_bg.corner_radius_top_right = 2
+    input_bg.corner_radius_bottom_left = 2
+    input_bg.corner_radius_bottom_right = 2
     input_panel.add_theme_stylebox_override("panel", input_bg)
-    input_panel.self_modulate = Color(1.0, 1.0, 1.0, 0.5)
+    input_panel.self_modulate = Color(1.0, 1.0, 1.0, 0.45)
     input_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     chat_stack.add_child(input_panel)
 
@@ -241,7 +196,7 @@ func _build_ui() -> void:
     ghost_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
     ghost_label.scroll_active = false
     ghost_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-    ghost_label.add_theme_font_size_override("normal_font_size", 11)
+    ghost_label.add_theme_font_size_override("normal_font_size", 7)
     
     var ghost_margin = MarginContainer.new()
     ghost_margin.add_theme_constant_override("margin_top", 2)
@@ -258,7 +213,7 @@ func _build_ui() -> void:
     input.add_theme_color_override("font_color", Color(1, 1, 1, 1))
     input.placeholder_text = ""
     input.clear_button_enabled = false
-    input.add_theme_font_size_override("font_size", 11)
+    input.add_theme_font_size_override("font_size", 7)
     input.text_changed.connect(_on_input_text_changed)
     input.text_submitted.connect(_on_text_submitted)
     
@@ -274,36 +229,32 @@ func _refresh_chat_layout() -> void:
         return
 
     var viewport_size: Vector2 = get_viewport().get_visible_rect().size
-    var chat_width: float = minf(CHAT_WIDTH, maxf(160.0, viewport_size.x * 0.45))
+    var chat_width: float = minf(CHAT_WIDTH, maxf(120.0, viewport_size.x * 0.70))
     var target_height: float = 0.0
     if _is_open():
-        target_height = 200.0 if not active_suggestions.is_empty() else 140.0
+        target_height = 120.0
     else:
         var passive_count: int = mini(MAX_VISIBLE_CLOSED_MESSAGES, _get_visible_messages().size())
-        target_height = 8.0 + passive_count * 14.0 if passive_count > 0 else 0.0
+        target_height = 4.0 + passive_count * 9.0 if passive_count > 0 else 0.0
     var chat_height: float = minf(target_height, maxf(76.0, viewport_size.y - 20.0))
     
-    chat_margin.offset_left = 12.0
-    chat_margin.offset_right = 12.0 + chat_width
-    chat_margin.offset_bottom = -12.0
-    chat_margin.offset_top = -12.0 - chat_height
+    chat_margin.offset_left = 4.0
+    chat_margin.offset_right = 4.0 + chat_width
+    chat_margin.offset_bottom = -36.0
+    chat_margin.offset_top = -36.0 - chat_height
 
     history_label.custom_minimum_size.x = maxf(120.0, chat_width - 16.0)
-    input.custom_minimum_size = Vector2(maxf(120.0, chat_width - 12.0), 24.0)
+    input.custom_minimum_size = Vector2(maxf(120.0, chat_width - 12.0), 16.0)
     if ghost_label:
-        ghost_label.custom_minimum_size = Vector2(maxf(120.0, chat_width - 12.0), 24.0)
+        ghost_label.custom_minimum_size = Vector2(maxf(120.0, chat_width - 12.0), 16.0)
 
-    var input_height: float = 28.0 if _is_open() else 0.0
+    var input_height: float = 16.0 if _is_open() else 0.0
     var suggestion_height: float = 0.0
-    if _is_open() and not active_suggestions.is_empty():
-        suggestion_height = minf(120.0, maxf(48.0, chat_height * 0.40))
-        
-    var history_height: float = maxf(18.0 if _is_open() else 12.0, chat_height - input_height - suggestion_height - 4.0)
+    var history_height: float = maxf(9.0 if _is_open() else 6.0, chat_height - input_height - 4.0)
     if history_scroll != null:
         history_scroll.custom_minimum_size = Vector2(maxf(120.0, chat_width - 16.0), history_height)
         history_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-    if suggestion_scroll != null:
-        suggestion_scroll.custom_minimum_size = Vector2(maxf(120.0, chat_width - 12.0), suggestion_height)
+
 
 func _can_open_chat() -> bool:
     return is_instance_valid(Ref.main) \
@@ -446,8 +397,15 @@ func _refresh_suggestions() -> void:
         if text != "" and active_suggestions.size() > 0:
             var selected = active_suggestions[selected_suggestion_index]
             var insert_text = str(selected.get("insert", ""))
-            if insert_text.begins_with(text) and insert_text.length() > text.length():
-                var completion = insert_text.substr(text.length())
+            
+            var resulting_text = insert_text
+            if not resulting_text.begins_with(text) and not text.ends_with(" "):
+                var last_space = text.rfind(" ")
+                if last_space != -1:
+                    resulting_text = text.substr(0, last_space + 1) + insert_text
+            
+            if resulting_text.to_lower().begins_with(text.to_lower()) and resulting_text.length() > text.length():
+                var completion = resulting_text.substr(text.length())
                 ghost_label.text = "[color=transparent]" + _escape_bbcode(text) + "[/color][color=#a0a0a0]" + _escape_bbcode(completion) + "[/color]"
 
     _rebuild_suggestion_widgets()
@@ -455,119 +413,12 @@ func _refresh_suggestions() -> void:
 func _get_command_suggestions(text: String) -> Array:
     if not text.begins_with("/"):
         return []
-        
-    var suggestions: Array = []
-    var tokens := text.split(" ", false)
-    var ends_with_space = text.ends_with(" ")
-    if ends_with_space: 
-        tokens.append("")
-        
-    if tokens.size() <= 1:
-        var search = text.to_lower()
-        for cmd in COMMAND_REGISTRY:
-            if cmd.begins_with(search):
-                var args_str = " ".join(COMMAND_REGISTRY[cmd].args)
-                var hint = COMMAND_REGISTRY[cmd].desc
-                if args_str != "":
-                    hint = args_str + " - " + hint
-                suggestions.append({
-                    "insert": cmd,
-                    "display": cmd,
-                    "hint": hint
-                })
-    else:
-        var cmd = tokens[0].to_lower()
-        if COMMAND_REGISTRY.has(cmd):
-            var reg = COMMAND_REGISTRY[cmd]
-            var arg_idx = tokens.size() - 2
-            
-            var current_arg = tokens[-1].to_lower()
-            var prefix_text = ""
-            for i in range(tokens.size() - 1):
-                prefix_text += tokens[i] + " "
-                
-            var options = []
-            if cmd == "/gamemode" and arg_idx == 0:
-                options = ["creative", "survival", "adventure", "spectator"]
-            elif cmd == "/weather" and arg_idx == 0:
-                options = ["clear", "rain", "thunder"]
-            elif cmd == "/time" and arg_idx == 0:
-                options = ["set", "add", "query"]
-            elif cmd == "/time" and arg_idx == 1 and tokens[1].to_lower() == "set":
-                options = ["day", "night", "noon", "midnight"]
-                
-            var matched_options = []
-            for opt in options:
-                if opt.begins_with(current_arg):
-                    matched_options.append(opt)
-                    
-            if matched_options.size() > 0:
-                for opt in matched_options:
-                    suggestions.append({
-                        "insert": prefix_text + opt,
-                        "display": opt,
-                        "hint": "Option"
-                    })
-            else:
-                var args_str = ""
-                for i in range(reg.args.size()):
-                    if i == arg_idx:
-                        args_str += reg.args[i] + " "
-                    else:
-                        args_str += reg.args[i] + " "
-                
-                if args_str != "":
-                    suggestions.append({
-                        "insert": text,
-                        "display": cmd,
-                        "hint": args_str.strip_edges()
-                    })
-                    
-    return suggestions
+    if Ref.coop_manager != null and Ref.coop_manager.has_method("get_command_autocomplete_entries"):
+        return Ref.coop_manager.get_command_autocomplete_entries(text)
+    return []
 
 func _rebuild_suggestion_widgets() -> void:
-    if suggestion_panel == null or suggestion_list == null:
-        return
-
-    for child in suggestion_list.get_children():
-        child.queue_free()
-
-    var visible_suggestions: Array = _get_visible_suggestions()
-    suggestion_panel.visible = _is_open() and not visible_suggestions.is_empty()
-    suggestion_hint_label.visible = suggestion_panel.visible
-    suggestion_title_label.visible = suggestion_panel.visible
-    if not suggestion_panel.visible:
-        suggestion_title_label.text = ""
-        suggestion_hint_label.text = ""
-        return
-
-    var first_visible_index: int = int(visible_suggestions[0].get("index", 0))
-    var total_count: int = active_suggestions.size()
-    
-    var current_text = input.text.strip_edges().to_lower()
-    if current_text.begins_with("/") and current_text.contains(" "):
-        suggestion_title_label.text = "Arguments"
-    else:
-        suggestion_title_label.text = "Command Suggestions"
-        
-    suggestion_hint_label.text = "Tab completes, Enter runs  (%d/%d)" % [selected_suggestion_index + 1, total_count]
-
-    for entry in visible_suggestions:
-        var actual_index: int = int(entry.get("index", 0))
-        var suggestion: Dictionary = entry.get("data", {})
-        var button := Button.new()
-        button.flat = true
-        button.focus_mode = Control.FOCUS_NONE
-        button.alignment = HORIZONTAL_ALIGNMENT_LEFT
-        button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-        button.clip_text = true
-        button.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-        button.text = _format_suggestion_label(suggestion)
-        button.add_theme_font_size_override("font_size", 11)
-        button.self_modulate = Color(1.0, 1.0, 0.5) if actual_index == selected_suggestion_index else Color(0.8, 0.8, 0.8)
-        button.mouse_entered.connect(_set_selected_suggestion.bind(actual_index))
-        button.pressed.connect(_apply_suggestion.bind(actual_index))
-        suggestion_list.add_child(button)
+    pass
 
 func _format_suggestion_label(suggestion: Dictionary) -> String:
     var display_text: String = str(suggestion.get("display", suggestion.get("insert", "")))
@@ -600,15 +451,23 @@ func _cycle_suggestion(step: int) -> void:
     else:
         selected_suggestion_index = posmod(selected_suggestion_index + step, active_suggestions.size())
         
-    # On Tab, insert the suggestion without executing
     var suggestion = active_suggestions[selected_suggestion_index]
-    var insert_text = str(suggestion.get("insert", input.text))
-    # Add a space if we completed a command or argument to keep typing
-    if not insert_text.ends_with(" ") and suggestion.get("hint", "") != "Option":
-        if insert_text != input.text:
-            insert_text += " "
+    var insert_text = str(suggestion.get("insert", ""))
+    if insert_text == "":
+        return
+        
+    var text = input.text
+    var resulting_text = insert_text
+    
+    if not resulting_text.to_lower().begins_with(text.to_lower()) and not text.ends_with(" "):
+        var last_space = text.rfind(" ")
+        if last_space != -1:
+            resulting_text = text.substr(0, last_space + 1) + insert_text
             
-    _set_input_text(insert_text, true)
+    if not resulting_text.ends_with(" "):
+        resulting_text += " "
+            
+    _set_input_text(resulting_text, true)
     input.grab_focus()
 
 func _set_selected_suggestion(index: int) -> void:
@@ -619,10 +478,24 @@ func _apply_suggestion(index: int, preserve_focus: bool = true) -> void:
     if index < 0 or index >= active_suggestions.size() or input == null:
         return
     selected_suggestion_index = index
-    var insert_text = str(active_suggestions[index].get("insert", input.text))
-    if not insert_text.ends_with(" "):
-        insert_text += " "
-    _set_input_text(insert_text, true)
+    
+    var suggestion = active_suggestions[selected_suggestion_index]
+    var insert_text = str(suggestion.get("insert", ""))
+    if insert_text == "":
+        return
+        
+    var text = input.text
+    var resulting_text = insert_text
+    
+    if not resulting_text.to_lower().begins_with(text.to_lower()) and not text.ends_with(" "):
+        var last_space = text.rfind(" ")
+        if last_space != -1:
+            resulting_text = text.substr(0, last_space + 1) + insert_text
+            
+    if not resulting_text.ends_with(" "):
+        resulting_text += " "
+        
+    _set_input_text(resulting_text, true)
     if preserve_focus:
         input.grab_focus()
 
@@ -676,12 +549,11 @@ func _refresh_chat_visibility() -> void:
     chat_margin.visible = show_input or show_history
     input_panel.visible = show_input
     history_panel.visible = show_history
-    suggestion_panel.visible = show_input and not active_suggestions.is_empty()
 
     if show_history:
-        history_panel.self_modulate = Color(1.0, 1.0, 1.0, 0.5 if show_input else 0.0)
+        history_panel.self_modulate = Color(1.0, 1.0, 1.0, 0.45 if show_input else 0.0)
         history_label.text = _build_history_bbcode(visible_messages)
-        history_label.custom_minimum_size = Vector2(CHAT_WIDTH - 16.0, 14.0 * maxi(1, visible_messages.size()) + 6.0)
+        history_label.custom_minimum_size = Vector2(CHAT_WIDTH - 16.0, 9.0 * maxi(1, visible_messages.size()) + 2.0)
 
 func _get_visible_messages() -> Array[Dictionary]:
     var visible_messages: Array[Dictionary] = []
