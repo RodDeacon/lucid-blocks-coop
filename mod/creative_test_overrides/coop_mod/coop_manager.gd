@@ -131,6 +131,7 @@ var client_collected_drop_uuids: Dictionary = {}
 var reconnect_restore_capture_on_close: bool = false
 var entity_interp_map: Dictionary = {}
 var host_entity_last_sent: Dictionary = {}
+var host_entity_activity_refresh_timer: float = 0.0
 var host_server_time: float = 0.0
 var client_server_time: float = 0.0
 var client_server_time_initialized: bool = false
@@ -300,6 +301,7 @@ func _get_live_tracked_drops() -> Array:
 
 func _physics_process(delta: float) -> void:
     _refresh_world_authority_mode()
+    _refresh_host_entity_activity_override(delta)
     _refresh_session_load_radius()
     _flush_pending_remote_world_changes()
     _tick_entity_interpolation(delta)
@@ -551,6 +553,7 @@ func disconnect_session(announce: bool = true) -> void:
     persist_timer = 0.0
     autosave_timer = 0.0
     client_state_heartbeat_timer = 0.0
+    host_entity_activity_refresh_timer = 0.0
     synced_entities.clear()
     synced_dropped_items.clear()
     host_entity_last_sent.clear()
@@ -2150,6 +2153,36 @@ func _refresh_world_authority_mode() -> void:
     last_local_world_authority = has_authority
 
 
+func _refresh_host_entity_activity_override(delta: float) -> void:
+    if not multiplayer.is_server() or not _has_live_peer():
+        host_entity_activity_refresh_timer = 0.0
+        return
+
+    host_entity_activity_refresh_timer += delta
+    if host_entity_activity_refresh_timer < 0.2:
+        return
+    host_entity_activity_refresh_timer = 0.0
+
+    for child in _get_live_tracked_entities():
+        if not (child is Entity) or child is Player or is_remote_player_proxy(child):
+            continue
+        var entity := child as Entity
+        if entity == null or not is_instance_valid(entity) or not entity.is_inside_tree():
+            continue
+        entity.process_mode = Node.PROCESS_MODE_INHERIT
+        entity.set_process(true)
+        entity.set_physics_process(true)
+        if entity.has_method("_refresh_visibility_enabler_target"):
+            entity.call("_refresh_visibility_enabler_target")
+        var visible_enabler: VisibleOnScreenEnabler3D = entity.get_node_or_null("%VisibleOnScreenEnabler3D") as VisibleOnScreenEnabler3D
+        if visible_enabler != null:
+            visible_enabler.enable_node_path = ""
+            visible_enabler.process_mode = Node.PROCESS_MODE_DISABLED
+        var distance_timer: Timer = entity.get_node_or_null("%DistanceCheckTimer") as Timer
+        if distance_timer != null and distance_timer.is_stopped():
+            distance_timer.start()
+
+
 func _get_same_instance_session_positions() -> Array:
     var positions: Array = []
     if not _can_sample_player():
@@ -3376,6 +3409,22 @@ func _step_client_fish_visuals(entity, delta: float) -> void:
         fish_model.set("speed", lerpf(float(fish_model.get("speed")), speed_ratio, clampf(delta * 3.0, 0.0, 1.0)))
 
 
+func _advance_client_animation_tree(entity, delta: float) -> void:
+    var animation_tree: AnimationTree = _find_first_animation_tree(entity)
+    if animation_tree == null:
+        return
+    animation_tree.active = true
+    if not bool(animation_tree.get_meta("coop_manual_advance_initialized", false)):
+        animation_tree.set_meta("coop_manual_advance_initialized", true)
+        animation_tree.set_process(false)
+        animation_tree.set_physics_process(false)
+        var animation_player: AnimationPlayer = _find_first_animation_player(entity)
+        if animation_player != null:
+            animation_player.set_process(false)
+            animation_player.set_physics_process(false)
+    animation_tree.advance(delta)
+
+
 func _update_client_procedural_entity_visuals(entity, delta: float) -> void:
     if entity == null or not is_instance_valid(entity):
         return
@@ -4249,6 +4298,7 @@ func _on_peer_connected(id: int) -> void:
     status_message = "Peer %s connected" % id
     print("[lucid-blocks-coop] %s" % status_message)
     _update_status_text()
+    _refresh_host_entity_activity_override(999.0)
 
 
 func _on_peer_disconnected(id: int) -> void:
@@ -5543,12 +5593,12 @@ func _tick_client_synced_entity_visuals(delta: float) -> void:
 
 func _apply_interp_animation(entity, walk_val: float, compact_anim: Dictionary) -> void:
     var animation_tree: AnimationTree = _find_first_animation_tree(entity)
+    _apply_compact_animation_state(entity, compact_anim)
     if animation_tree != null:
         if _animation_tree_has_parameter(animation_tree, "parameters/walk/blend_amount"):
             animation_tree.set("parameters/walk/blend_amount", walk_val)
         if _animation_tree_has_parameter(animation_tree, "parameters/run/blend_amount"):
             animation_tree.set("parameters/run/blend_amount", walk_val)
-    _apply_compact_animation_state(entity, compact_anim)
 
 
 func _update_client_entity_visuals(entity, entity_velocity: Vector3, _delta: float) -> void:
@@ -5562,6 +5612,7 @@ func _update_client_entity_visuals(entity, entity_velocity: Vector3, _delta: flo
     var walk_val: float = clampf(Vector3(entity_velocity.x, 0.0, entity_velocity.z).length() / maxf(base_speed * speed_modifier, 0.001), 0.0, 1.0)
     var compact_anim: Dictionary = entity.get_meta("coop_compact_anim_state", {}) if entity.has_meta("coop_compact_anim_state") else {}
     _apply_interp_animation(entity, walk_val, compact_anim if compact_anim is Dictionary else {})
+    _advance_client_animation_tree(entity, _delta)
 
 
 func _capture_compact_animation_state(root: Node) -> Dictionary:
@@ -5746,11 +5797,36 @@ func _find_first_animation_tree(root: Node) -> AnimationTree:
     return found
 
 
+func _find_first_animation_player(root: Node) -> AnimationPlayer:
+    if root == null or not is_instance_valid(root):
+        return null
+    if root.has_meta("coop_animation_player_node"):
+        var cached_player = root.get_meta("coop_animation_player_node")
+        if cached_player is AnimationPlayer and is_instance_valid(cached_player):
+            return cached_player
+        if str(cached_player) == "false":
+            return null
+        root.remove_meta("coop_animation_player_node")
+    var found: AnimationPlayer = _search_first_animation_player(root)
+    root.set_meta("coop_animation_player_node", found if found != null else false)
+    return found
+
+
 func _search_first_animation_tree(root: Node) -> AnimationTree:
     if root is AnimationTree:
         return root as AnimationTree
     for child in root.get_children():
         var found: AnimationTree = _search_first_animation_tree(child)
+        if found != null:
+            return found
+    return null
+
+
+func _search_first_animation_player(root: Node) -> AnimationPlayer:
+    if root is AnimationPlayer:
+        return root as AnimationPlayer
+    for child in root.get_children():
+        var found: AnimationPlayer = _search_first_animation_player(child)
         if found != null:
             return found
     return null

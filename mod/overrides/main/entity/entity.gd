@@ -320,14 +320,16 @@ func _use_session_targeting() -> bool:
 
 
 func _should_ignore_visibility_culling() -> bool:
-    return _use_session_targeting() and Ref.coop_manager.is_position_near_same_instance_player(global_position, process_distance)
+    return _use_session_targeting()
 
 
 func _refresh_visibility_enabler_target() -> void:
     if _should_ignore_visibility_culling() or not disabled_by_visibility:
         %VisibleOnScreenEnabler3D.enable_node_path = ""
+        %VisibleOnScreenEnabler3D.process_mode = Node.PROCESS_MODE_DISABLED if _should_ignore_visibility_culling() else Node.PROCESS_MODE_INHERIT
         disabled = false
     else:
+        %VisibleOnScreenEnabler3D.process_mode = Node.PROCESS_MODE_INHERIT
         %VisibleOnScreenEnabler3D.enable_node_path = ".."
 
 
@@ -838,6 +840,6 @@ func distance_process_check() -> void :
         set_physics_process(false)
         set_process(false)
 
-    elif near_session_player or not disabled_by_visibility or %VisibleOnScreenEnabler3D.is_on_screen():
+    elif _use_session_targeting() or near_session_player or not disabled_by_visibility or %VisibleOnScreenEnabler3D.is_on_screen():
         set_physics_process(true)
         set_process(true)
