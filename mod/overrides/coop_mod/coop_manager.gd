@@ -24,9 +24,6 @@ const HOST_SESSION_MIN_LOAD_RADIUS: int = 96
 const HOST_SESSION_MAX_LOAD_RADIUS: int = 96
 const HOST_SESSION_EDGE_BUFFER: float = 72.0
 const HOST_SESSION_RADIUS_STEP: int = 16
-const SHARED_BUBBLE_SOFT_TETHER_DISTANCE: float = 64.0
-const SHARED_BUBBLE_HARD_TETHER_DISTANCE: float = 80.0
-const SHARED_BUBBLE_TETHER_PULL: float = 10.0
 const ENTITY_SYNC_RADIUS: float = 144.0
 const DROP_SYNC_RADIUS: float = 96.0
 const ENTITY_ATTACK_REQUEST_MAX_DISTANCE: float = 6.0
@@ -410,7 +407,6 @@ func _physics_process(delta: float) -> void:
     _tick_client_synced_entity_visuals(delta)
     _tick_local_downed_state(delta)
     _tick_revive_interaction(delta)
-    _enforce_shared_bubble_tether(delta)
     _cleanup_client_prediction_state()
 
     if reconnect_pending:
@@ -3549,39 +3545,6 @@ func _get_nearest_connected_peer_state() -> Dictionary:
             nearest_distance_squared = distance_squared
             nearest_state = state
     return nearest_state
-
-
-func _enforce_shared_bubble_tether(delta: float) -> void:
-    if not _has_live_peer() or not _can_sample_player():
-        return
-    if int(Ref.world.current_dimension) == int(LucidBlocksWorld.Dimension.POCKET):
-        return
-    if reconnect_pending or client_restore_in_progress or remote_host_respawning or is_local_player_fake_dead() or is_local_player_downed() or Ref.player.dead or Ref.player.disabled:
-        return
-    var nearest_state: Dictionary = _get_nearest_connected_peer_state()
-    if nearest_state.is_empty():
-        return
-
-    var peer_position: Vector3 = nearest_state.get("position", Ref.player.global_position)
-    var to_local: Vector3 = Ref.player.global_position - peer_position
-    var distance: float = to_local.length()
-    if distance <= SHARED_BUBBLE_SOFT_TETHER_DISTANCE:
-        return
-
-    var direction: Vector3 = to_local.normalized() if distance > 0.001 else Vector3.RIGHT
-    if distance > SHARED_BUBBLE_HARD_TETHER_DISTANCE:
-        Ref.player.global_position = peer_position + direction * SHARED_BUBBLE_HARD_TETHER_DISTANCE
-        Ref.player.movement_velocity = Ref.player.movement_velocity.slide(direction)
-        Ref.player.knockback_velocity = Ref.player.knockback_velocity.slide(direction)
-        Ref.player.rope_velocity = Ref.player.rope_velocity.slide(direction)
-        status_message = "Tether limit reached"
-        _update_status_text()
-        return
-
-    var over_soft: float = distance - SHARED_BUBBLE_SOFT_TETHER_DISTANCE
-    var soft_span: float = maxf(SHARED_BUBBLE_HARD_TETHER_DISTANCE - SHARED_BUBBLE_SOFT_TETHER_DISTANCE, 0.001)
-    var pull_strength: float = clampf(over_soft / soft_span, 0.0, 1.0) * SHARED_BUBBLE_TETHER_PULL * delta
-    Ref.player.global_position -= direction * pull_strength
 
 
 func _get_local_skin_color() -> Color:
